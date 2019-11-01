@@ -34,6 +34,15 @@
 #include <openssl/buffer.h>
 #include <stdint.h> // uint32_t ...
 #include <limits.h> // CHAR_BIT , usually 8
+/* SGX */
+#include "service_provider.h"
+#include <sgx_key_exchange.h>
+// #include <sgx_report.h>
+// #include "hexutil.h"
+// #include "crypto.h"
+// #include "settings.h"
+// #include "iasrequest.h"
+// #include <openssl/pem.h>
 
 #ifndef min
 #define min(a,b)    (((a)<(b)) ? (a) : (b))
@@ -3080,6 +3089,94 @@ static void curand_set_pseudorandom_seed(VirtIOArg *arg, ThreadContext *tctx)
     debug("curand set seed generator 0x%lx, seed 0x%llx\n", 
         (uint64_t)generator, seed);
 }
+
+/* SGX***********************************************************************/
+
+static void sgx_proc_msg0(VirtIOArg *arg, ThreadContext *tctx)
+{
+    ra_samp_response_header_t* p_resp_msg;
+    int ret = 0;
+
+    func();
+    ret = sp_ra_proc_msg0_req((sample_ra_msg0_t *)&arg->srcSize, 
+            sizeof(sample_ra_msg0_t), &p_resp_msg);
+    if (0 != ret) {
+        error("Error, call sp_ra_proc_msg1_req fail.\n");
+        arg->cmd = ret;
+        return;
+    }
+    debug("resp size is %x\n", p_resp_msg->size);
+    arg->paramSize = p_resp_msg->size;
+    if(p_resp_msg->size > arg->dstSize) {
+        error("Memory copy is bufferoverflow!\n");
+    }
+    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
+                    p_resp_msg->size);
+    free(p_resp_msg);
+    arg->cmd = ret;
+}
+
+static void sgx_proc_msg1(VirtIOArg *arg, ThreadContext *tctx)
+{
+    sgx_ra_msg1_t msg1;
+    ra_samp_response_header_t* p_resp_msg;
+    int ret = 0;
+
+    func();
+    cpu_physical_memory_read((hwaddr)arg->src, &msg1, sizeof(sgx_ra_msg1_t));
+    ret = sp_ra_proc_msg1_req((const sample_ra_msg1_t*)&msg1,
+            sizeof(sgx_ra_msg1_t),
+            &p_resp_msg);
+    if(0 != ret) {
+        error("Error, call sp_ra_proc_msg1_req fail.\n");
+        arg->cmd = ret;
+        return;
+    }
+    debug("resp size is %x\n", p_resp_msg->size);
+    arg->paramSize = p_resp_msg->size;
+    if(p_resp_msg->size > arg->dstSize) {
+        error("Memory copy is bufferoverflow!\n");
+    }
+    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
+                    p_resp_msg->size);
+    free(p_resp_msg);
+    arg->cmd = 0;
+}
+
+static void sgx_proc_msg3(VirtIOArg *arg, ThreadContext *tctx)
+{
+    uint8_t *msg3;
+    ra_samp_response_header_t* p_resp_msg;
+    sample_ra_att_result_msg_t *p_att_result;
+    int ret = 0;
+
+    func();
+    msg3 = (uint8_t *)malloc(arg->srcSize);
+    cpu_physical_memory_read((hwaddr)arg->src, msg3, arg->srcSize);
+    ret = sp_ra_proc_msg3_req((const sample_ra_msg3_t*)msg3,
+            arg->srcSize,
+            &p_resp_msg);
+    if(0 != ret) {
+        error("Error, call sp_ra_proc_msg3_req fail.\n");
+        arg->cmd = ret;
+        return;
+    }
+    p_att_result= (sample_ra_att_result_msg_t *)p_resp_msg->body;
+    arg->paramSize = p_resp_msg->size + p_att_result->secret.payload_size;
+    if(p_resp_msg->size > arg->dstSize) {
+        error("Memory copy is bufferoverflow!"
+            " resp size %x, req size %x\n", p_resp_msg->size, arg->dstSize);
+    }
+    debug("resp size is 0x%x\n", p_resp_msg->size);
+    debug("writing back\n");
+    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
+                    arg->paramSize);
+    debug("free msg3\n");
+    free(msg3);
+    free(p_resp_msg);
+    arg->cmd = 0;
+}
+
 /*
 static inline void cpu_physical_memory_read(hwaddr addr,
                                             void *buf, int len)
@@ -3444,6 +3541,15 @@ static void *worker_processor(void *arg)
                 break;
             case VIRTIO_CURAND_SETPSEUDORANDOMSEED:
                 curand_set_pseudorandom_seed(msg, tctx);
+                break;
+            case VIRTIO_SGX_MSG0:
+                sgx_proc_msg0(msg, tctx);
+                break;
+            case VIRTIO_SGX_MSG1:
+                sgx_proc_msg1(msg, tctx);
+                break;
+            case VIRTIO_SGX_MSG3:
+                sgx_proc_msg3(msg, tctx);
                 break;
             default:
                 error("[+] header.cmd=%u, nr= %u \n",

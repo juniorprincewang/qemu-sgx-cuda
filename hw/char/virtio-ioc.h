@@ -69,7 +69,11 @@
 
 #define VIRTIO_CUDA_MMAPCTL 				10
 #define VIRTIO_CUDA_MUNMAPCTL 				11
-
+//sgx----------------------------------
+#define VIRTIO_SGX_MSG0 					80
+#define VIRTIO_SGX_MSG1 					81
+#define VIRTIO_SGX_MSG3 					82
+//sgx----------------------------------
 #define VIRTIO_CUBLAS_CREATE 				100
 #define VIRTIO_CUBLAS_DESTROY 				101
 #define VIRTIO_CUBLAS_SETVECTOR 			102
@@ -103,6 +107,7 @@
 #define VIRTIO_CURAND_SETGENERATOROFFSET		207
 #define VIRTIO_CURAND_SETPSEUDORANDOMSEED		208
 #define VIRTIO_CURAND_CREATEGENERATORHOST		209
+
 #else
 
 #include <linux/ioctl.h>
@@ -244,6 +249,14 @@ typedef struct VirtIOArg
 #define VIRTIO_IOC_EVENTQUERY \
 	_IOWR(VIRTIO_IOC_ID,42,VirtIOArg)
 
+// sgx ------------------------------
+#define VIRTIO_IOC_SGX_MSG0 \
+	_IOWR(VIRTIO_IOC_ID,80,VirtIOArg)
+#define VIRTIO_IOC_SGX_MSG1 \
+	_IOWR(VIRTIO_IOC_ID,81,VirtIOArg)
+#define VIRTIO_IOC_SGX_MSG3 \
+	_IOWR(VIRTIO_IOC_ID,82,VirtIOArg)
+// cublas ------------------------------
 #define VIRTIO_IOC_CUBLAS_CREATE \
 	_IOWR(VIRTIO_IOC_ID,100,VirtIOArg)
 #define VIRTIO_IOC_CUBLAS_DESTROY \

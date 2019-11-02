@@ -31,18 +31,18 @@
 
 
 
-#include "service_provider.h"
+#include "hw/virtio/service_provider.h"
 
-#include "sample_libcrypto.h"
+#include "hw/virtio/sample_libcrypto.h"
 
-#include "ecp.h"
+#include "hw/virtio/ecp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <time.h>
 #include <string.h>
-#include "ias_ra.h"
+#include "hw/virtio/ias_ra.h"
 
 #ifndef SAFE_FREE
 #define SAFE_FREE(ptr) {if (NULL != (ptr)) {free(ptr); (ptr) = NULL;}}
@@ -162,24 +162,10 @@ const uint8_t g_epid_unlinkable_att_key_id_list[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-
-// This is a context data structure used on SP side
-typedef struct _sp_db_item_t
-{
-    sample_ec_pub_t             g_a;
-    sample_ec_pub_t             g_b;
-    sample_ec_key_128bit_t      vk_key;// Shared secret key for the REPORT_DATA
-    sample_ec_key_128bit_t      mk_key;// Shared secret key for generating MAC's
-    sample_ec_key_128bit_t      sk_key;// Shared secret key for encryption
-    sample_ec_key_128bit_t      smk_key;// Used only for SIGMA protocol
-    sample_ec_priv_t            b;
-    sample_ps_sec_prop_desc_t   ps_sec_prop;
-}sp_db_item_t;
-static sp_db_item_t g_sp_db;
+// static sp_db_item_t g_sp_db;
 
 static const sample_extended_epid_group* g_sp_extended_epid_group_id= NULL;
 static bool g_is_sp_registered = false;
-// static bool g_return_ecdsa_att_key_id = true;
 static bool g_return_ecdsa_att_key_id = false;
 static int g_sp_credentials = 0;
 static int g_authentication_token = 0;
@@ -297,7 +283,7 @@ CLEANUP:
 }
 
 // Verify message 1 then generate and return message 2 to isv.
-int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
+int sp_ra_proc_msg1_req(sp_db_item_t *g_sp_db, const sample_ra_msg1_t *p_msg1,
 						uint32_t msg1_size,
 						ra_samp_response_header_t **pp_msg2)
 {
@@ -342,7 +328,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         // Need to save the client's public ECDH key to local storage
-        if (memcpy_s(&g_sp_db.g_a, sizeof(g_sp_db.g_a), &p_msg1->g_a,
+        if (memcpy_s(&g_sp_db->g_a, sizeof(g_sp_db->g_a), &p_msg1->g_a,
                      sizeof(p_msg1->g_a)))
         {
             fprintf(stderr, "\nError, cannot do memcpy in [%s].", __FUNCTION__);
@@ -372,8 +358,8 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         // Need to save the SP ECCDH key pair to local storage.
-        if(memcpy_s(&g_sp_db.b, sizeof(g_sp_db.b), &priv_key,sizeof(priv_key))
-           || memcpy_s(&g_sp_db.g_b, sizeof(g_sp_db.g_b),
+        if(memcpy_s(&g_sp_db->b, sizeof(g_sp_db->b), &priv_key,sizeof(priv_key))
+           || memcpy_s(&g_sp_db->g_b, sizeof(g_sp_db->g_b),
                        &pub_key,sizeof(pub_key)))
         {
             fprintf(stderr, "\nError, cannot do memcpy in [%s].", __FUNCTION__);
@@ -399,7 +385,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 
         // smk is only needed for msg2 generation.
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SMK_SK,
-            &g_sp_db.smk_key, &g_sp_db.sk_key);
+            &g_sp_db->smk_key, &g_sp_db->sk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -409,7 +395,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 
         // The rest of the keys are the shared secrets for future communication.
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_MK_VK,
-            &g_sp_db.mk_key, &g_sp_db.vk_key);
+            &g_sp_db->mk_key, &g_sp_db->vk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -419,7 +405,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 #else
         // smk is only needed for msg2 generation.
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SMK,
-                                &g_sp_db.smk_key);
+                                &g_sp_db->smk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -429,7 +415,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 
         // The rest of the keys are the shared secrets for future communication.
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_MK,
-                                &g_sp_db.mk_key);
+                                &g_sp_db->mk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -438,7 +424,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_SK,
-                                &g_sp_db.sk_key);
+                                &g_sp_db->sk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -447,7 +433,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         }
 
         derive_ret = derive_key(&dh_key, SAMPLE_DERIVE_KEY_VK,
-                                &g_sp_db.vk_key);
+                                &g_sp_db->vk_key);
         if(derive_ret != true)
         {
             fprintf(stderr, "\nError, derive key fail in [%s].", __FUNCTION__);
@@ -475,8 +461,8 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         p_msg2 = (sample_ra_msg2_t *)p_msg2_full->body;
 
         // Assemble MSG2
-        if(memcpy_s(&p_msg2->g_b, sizeof(p_msg2->g_b), &g_sp_db.g_b,
-                    sizeof(g_sp_db.g_b)) ||
+        if(memcpy_s(&p_msg2->g_b, sizeof(p_msg2->g_b), &g_sp_db->g_b,
+                    sizeof(g_sp_db->g_b)) ||
            memcpy_s(&p_msg2->spid, sizeof(sample_spid_t),
                     &g_spid, sizeof(g_spid)))
         {
@@ -498,10 +484,10 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 #endif
         // Create gb_ga
         sample_ec_pub_t gb_ga[2];
-        if(memcpy_s(&gb_ga[0], sizeof(gb_ga[0]), &g_sp_db.g_b,
-                    sizeof(g_sp_db.g_b))
-           || memcpy_s(&gb_ga[1], sizeof(gb_ga[1]), &g_sp_db.g_a,
-                       sizeof(g_sp_db.g_a)))
+        if(memcpy_s(&gb_ga[0], sizeof(gb_ga[0]), &g_sp_db->g_b,
+                    sizeof(g_sp_db->g_b))
+           || memcpy_s(&gb_ga[1], sizeof(gb_ga[1]), &g_sp_db->g_a,
+                       sizeof(g_sp_db->g_a)))
         {
             fprintf(stderr,"\nError, memcpy failed in [%s].", __FUNCTION__);
             ret = SP_INTERNAL_ERROR;
@@ -523,7 +509,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
         // Generate the CMACsmk for gb||SPID||TYPE||KDF_ID||Sigsp(gb,ga)
         uint8_t mac[SAMPLE_EC_MAC_SIZE] = {0};
         uint32_t cmac_size = offsetof(sample_ra_msg2_t, mac);
-        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db.smk_key,
+        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db->smk_key,
             (uint8_t *)&p_msg2->g_b, cmac_size, &mac);
         if(SAMPLE_SUCCESS != sample_ret)
         {
@@ -568,7 +554,7 @@ int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
 }
 
 // Process remote attestation message 3
-int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
+int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
                         uint32_t msg3_size,
                         ra_samp_response_header_t **pp_att_result_msg)
 {
@@ -597,7 +583,7 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
     do
     {
         // Compare g_a in message 3 with local g_a.
-        ret = memcmp(&g_sp_db.g_a, &p_msg3->g_a, sizeof(sample_ec_pub_t));
+        ret = memcmp(&g_sp_db->g_a, &p_msg3->g_a, sizeof(sample_ec_pub_t));
         if(ret)
         {
             fprintf(stderr, "\nError, g_a is not same [%s].", __FUNCTION__);
@@ -612,7 +598,7 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
 
         // Verify the message mac using SMK
         sample_cmac_128bit_tag_t mac = {0};
-        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db.smk_key,
+        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db->smk_key,
                                            p_msg3_cmaced,
                                            mac_size,
                                            &mac);
@@ -632,7 +618,7 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
             break;
         }
 
-        if(memcpy_s(&g_sp_db.ps_sec_prop, sizeof(g_sp_db.ps_sec_prop),
+        if(memcpy_s(&g_sp_db->ps_sec_prop, sizeof(g_sp_db->ps_sec_prop),
             &p_msg3->ps_sec_prop, sizeof(p_msg3->ps_sec_prop)))
         {
             fprintf(stderr,"\nError, memcpy failed in [%s].", __FUNCTION__);
@@ -662,8 +648,8 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
             ret = SP_INTERNAL_ERROR;
             break;
         }
-        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db.g_a),
-                                     sizeof(g_sp_db.g_a), sha_handle);
+        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db->g_a),
+                                     sizeof(g_sp_db->g_a), sha_handle);
         if(sample_ret != SAMPLE_SUCCESS)
         {
             fprintf(stderr,"\nError, udpate hash failed in [%s].",
@@ -671,8 +657,8 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
             ret = SP_INTERNAL_ERROR;
             break;
         }
-        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db.g_b),
-                                     sizeof(g_sp_db.g_b), sha_handle);
+        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db->g_b),
+                                     sizeof(g_sp_db->g_b), sha_handle);
         if(sample_ret != SAMPLE_SUCCESS)
         {
             fprintf(stderr,"\nError, udpate hash failed in [%s].",
@@ -680,8 +666,8 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
             ret = SP_INTERNAL_ERROR;
             break;
         }
-        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db.vk_key),
-                                     sizeof(g_sp_db.vk_key), sha_handle);
+        sample_ret = sample_sha256_update((uint8_t *)&(g_sp_db->vk_key),
+                                     sizeof(g_sp_db->vk_key), sha_handle);
         if(sample_ret != SAMPLE_SUCCESS)
         {
             fprintf(stderr,"\nError, udpate hash failed in [%s].",
@@ -826,7 +812,7 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
 
         // Generate mac based on the mk key.
         mac_size = sizeof(ias_platform_info_blob_t);
-        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db.mk_key,
+        sample_ret = sample_rijndael128_cmac_msg(&g_sp_db->mk_key,
             (const uint8_t*)&p_att_result_msg->platform_info_blob,
             mac_size,
             &p_att_result_msg->mac);
@@ -845,16 +831,16 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
            (isv_policy_passed == true))
         {
             fprintf(stdout, "\nsp sk_key\n");
-            for(i=0; i<sizeof(g_sp_db.sk_key); i++) {
-                fprintf(stdout, "\t %x", g_sp_db.sk_key[i]);
+            for(i=0; i<sizeof(g_sp_db->sk_key); i++) {
+                fprintf(stdout, "\t %x", g_sp_db->sk_key[i]);
             }
             fprintf(stdout, "\n\n");
-            fprintf(stdout, "\ng_secret:\n");
-            for (i=0; i<sizeof(g_secret); i++) {
-                fprintf(stdout, "\t %x", g_secret[i]);
-            }
-            fprintf(stdout, "\n\n");
-            ret = sample_rijndael128GCM_encrypt(&g_sp_db.sk_key,
+            // fprintf(stdout, "\ng_secret:\n");
+            // for (i=0; i<sizeof(g_secret); i++) {
+            //     fprintf(stdout, "\t %x", g_secret[i]);
+            // }
+            // fprintf(stdout, "\n\n");
+            ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
                         &g_secret[0],
                         p_att_result_msg->secret.payload_size,
                         p_att_result_msg->secret.payload,
@@ -864,7 +850,7 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
                         0,
                         &p_att_result_msg->secret.payload_tag);
             /* OK to decrypt
-            ret = sample_rijndael128GCM_encrypt(&g_sp_db.sk_key,
+            ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
                         p_att_result_msg->secret.payload,
                         p_att_result_msg->secret.payload_size,
                         &g_secret_de[0],
@@ -879,17 +865,17 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
                 }
             }
             */
-            fprintf(stdout, "payload_size %x\n", p_att_result_msg->secret.payload_size);
-            fprintf(stdout, "payload\n");
-            for (i=0; i<p_att_result_msg->secret.payload_size; i++) {
-                fprintf(stdout, "%x ", p_att_result_msg->secret.payload[i]);
-            }
-            fprintf(stdout, "\n\n");
-            fprintf(stdout, "payload_tag\n");
-            for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-                fprintf(stdout, "%x ", p_att_result_msg->secret.payload_tag[i]);
-            }
-            fprintf(stdout, "\n\n");
+            // fprintf(stdout, "payload_size %x\n", p_att_result_msg->secret.payload_size);
+            // fprintf(stdout, "payload\n");
+            // for (i=0; i<p_att_result_msg->secret.payload_size; i++) {
+            //     fprintf(stdout, "%x ", p_att_result_msg->secret.payload[i]);
+            // }
+            // fprintf(stdout, "\n\n");
+            // fprintf(stdout, "payload_tag\n");
+            // for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+            //     fprintf(stdout, "%x ", p_att_result_msg->secret.payload_tag[i]);
+            // }
+            // fprintf(stdout, "\n\n");
         }
     }while(0);
 
@@ -900,19 +886,14 @@ int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
     }
     else
     {
-        fprintf(stdout, "resp body\n");
-        for(int i=0; i<p_att_result_msg_full->size; i++) {
-            fprintf(stdout, "%x ", p_att_result_msg_full->body[i]);
-        }
-        fprintf(stdout, "\n");
         *pp_att_result_msg = p_att_result_msg_full;
     }
     return ret;
 }
 
-int sp_ra_decrypt_req(const uint8_t *p_msg,
+int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
-                        uint8_t **pp_resp_msg)
+                        sp_aes_gcm_data_t **pp_resp_msg)
 {
     uint8_t aes_gcm_iv[SAMPLE_SP_IV_SIZE] = {0};
     int ret;
@@ -926,18 +907,49 @@ int sp_ra_decrypt_req(const uint8_t *p_msg,
         return ret;
     }
     memset(encrypt_msg, 0, aes_gcm_data_size + msg_size);
-    encrypt_msg->secret.payload_size = msg_size;
-    ret = sample_rijndael128GCM_encrypt(&g_sp_db.sk_key,
+    encrypt_msg->payload_size = msg_size;
+    ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
                         p_msg,
-                        msg__size,
-                        encrypt_msg->secret.payload,
+                        msg_size,
+                        encrypt_msg->payload,
                         &aes_gcm_iv[0],
                         SAMPLE_SP_IV_SIZE,
                         NULL,
                         0,
-                        &encrypt_msg->secret.payload_tag);
+                        &encrypt_msg->payload_tag);
     // tag check
-    *pp_resp_msg = encrypt_msg->secret.payload;
+    *pp_resp_msg = encrypt_msg;
+    return ret;
+}
+
+int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
+                        uint32_t msg_size,
+                        sp_aes_gcm_data_t **pp_resp_msg)
+{
+    uint8_t aes_gcm_iv[SAMPLE_SP_IV_SIZE] = {0};
+    int ret;
+    sp_aes_gcm_data_t *encrypt_msg;
+    uint32_t aes_gcm_data_size = sizeof(sp_aes_gcm_data_t);
+    encrypt_msg = (sp_aes_gcm_data_t*)malloc(aes_gcm_data_size + msg_size);
+    if(!encrypt_msg)
+    {
+        fprintf(stderr, "\nError, out of memory in [%s].", __FUNCTION__);
+        ret = SP_INTERNAL_ERROR;
+        return ret;
+    }
+    memset(encrypt_msg, 0, aes_gcm_data_size + msg_size);
+    encrypt_msg->payload_size = msg_size;
+    ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
+                        NULL,
+                        0,
+                        NULL,
+                        &aes_gcm_iv[0],
+                        SAMPLE_SP_IV_SIZE,
+                        p_msg,
+                        msg_size,
+                        &encrypt_msg->payload_tag);
+    // tag check
+    *pp_resp_msg = encrypt_msg;
     return ret;
 }
 

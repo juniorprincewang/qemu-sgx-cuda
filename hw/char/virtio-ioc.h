@@ -144,6 +144,7 @@ typedef struct VirtIOArg
 	uint64_t param;
 	uint32_t paramSize;
 	uint64_t param2;
+	uint8_t mac[16];
 } VirtIOArg;
 /* see ioctl-number in https://github.com/torvalds/
 	linux/blob/master/Documentation/ioctl/ioctl-number.txt

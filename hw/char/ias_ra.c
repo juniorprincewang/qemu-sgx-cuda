@@ -31,15 +31,15 @@
 
 
 
-#include "service_provider.h"
-#include "sample_libcrypto.h"
-#include "ecp.h"
+#include "hw/virtio/service_provider.h"
+#include "hw/virtio/sample_libcrypto.h"
+#include "hw/virtio/ecp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <time.h>
 #include <string.h>
-#include "ias_ra.h"
+#include "hw/virtio/ias_ra.h"
 
 //This whole file is used as simulation of the interfaces to be
 // delivered an attestation server. 

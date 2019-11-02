@@ -19,6 +19,7 @@
 #include "standard-headers/linux/virtio_console.h"
 #include "hw/qdev.h"
 #include "hw/virtio/virtio.h"
+#include "service_provider.h"
 
 #include "cuda.h"
 #include "cuda_runtime.h"
@@ -125,6 +126,7 @@ struct ThreadContext
     unsigned char   deviceBitmap;
     chan_t          *worker_queue;
     QemuThread      worker_thread;
+    sp_db_item_t    g_sp_db;
 };
 
 /*

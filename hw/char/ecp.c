@@ -33,9 +33,9 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "ecp.h"
+#include "hw/virtio/ecp.h"
 
-#include "sample_libcrypto.h"
+#include "hw/virtio/sample_libcrypto.h"
 
 
 #define MAC_KEY_SIZE       16

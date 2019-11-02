@@ -117,20 +117,37 @@ typedef struct sample_ra_msg3_t
     uint8_t                     quote[];
 } sample_ra_msg3_t;
 
+// This is a context data structure used on SP side
+typedef struct _sp_db_item_t
+{
+    sample_ec_pub_t             g_a;
+    sample_ec_pub_t             g_b;
+    sample_ec_key_128bit_t      vk_key;// Shared secret key for the REPORT_DATA
+    sample_ec_key_128bit_t      mk_key;// Shared secret key for generating MAC's
+    sample_ec_key_128bit_t      sk_key;// Shared secret key for encryption
+    sample_ec_key_128bit_t      smk_key;// Used only for SIGMA protocol
+    sample_ec_priv_t            b;
+    sample_ps_sec_prop_desc_t   ps_sec_prop;
+}sp_db_item_t;
+
 int sp_ra_proc_msg0_req(const sample_ra_msg0_t *p_msg0,
     uint32_t msg0_size, ra_samp_response_header_t **pp_msg0_resp);
 
-int sp_ra_proc_msg1_req(const sample_ra_msg1_t *p_msg1,
-						uint32_t msg1_size,
-						ra_samp_response_header_t **pp_msg2);
+int sp_ra_proc_msg1_req(sp_db_item_t *g_sp_db, const sample_ra_msg1_t *p_msg1,
+                        uint32_t msg1_size,
+                        ra_samp_response_header_t **pp_msg2);
 
-int sp_ra_proc_msg3_req(const sample_ra_msg3_t *p_msg3,
+int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
                         uint32_t msg3_size,
                         ra_samp_response_header_t **pp_att_result_msg);
 
-int sp_ra_decrypt_req(const uint8_t *p_msg,
+int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
-                        uint8_t **pp_resp_msg);
+                        sp_aes_gcm_data_t **pp_resp_msg);
+
+int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
+                        uint32_t msg_size,
+                        sp_aes_gcm_data_t **pp_resp_msg);
 
 int sp_ra_free_msg2(
     sample_ra_msg2_t *p_msg2);
@@ -155,6 +172,7 @@ typedef struct sample_extended_epid_group
     sample_get_sigrl get_sigrl;
     sample_verify_attestation_evidence verify_attestation_evidence;
 } sample_extended_epid_group;
+
 
 #ifdef  __cplusplus
 }

@@ -35,7 +35,7 @@
 #include <stdint.h> // uint32_t ...
 #include <limits.h> // CHAR_BIT , usually 8
 /* SGX */
-#include "service_provider.h"
+#include "hw/virtio/service_provider.h"
 #include <sgx_key_exchange.h>
 // #include <sgx_report.h>
 // #include "hexutil.h"
@@ -51,10 +51,12 @@
 // #define VIRTIO_CUDA_DEBUG
 #ifdef VIRTIO_CUDA_DEBUG
     #define func() printf("[FUNC]%s\n",__FUNCTION__)
-    #define debug(fmt, arg...) printf("[DEBUG] "fmt, ##arg)
+    #define debug(fmt, arg...) printf("[DEBUG] " fmt, ##arg)
+    #define print(fmt, arg...) printf("" fmt, ##arg)
 #else
     #define func()   
     #define debug(fmt, arg...)   
+    #define print(fmt, arg...) 
 #endif
 
 #define error(fmt, arg...) printf("[ERROR]In file %s, line %d, "fmt, \
@@ -370,26 +372,27 @@ static void deinit_primary_context(CudaContext *ctx)
     memset(ctx->modules, 0, sizeof(ctx->modules));
 }
 
+static int cmp_mac(uint8_t *a, uint8_t *b, int n) {
+    for (int i=0; i< n; i++) {
+        if(a[i] != b[i]) {
+            error("binary mac does not match!"
+                " where a[%d]=%x != b[%d]=%x\n", i, a[i], i, b[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void cuda_register_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
 {
     void *fat_bin;
     int m_idx;
+    int i =0;
     uint32_t fatbin_size    = arg->srcSize;
     CudaContext *ctx        = &tctx->contexts[DEFAULT_DEVICE];
+    sp_aes_gcm_data_t *decrypt_msg;
+
     func();
-/*    // check out hmac
-    if( (fat_bin=gpa_to_hva((hwaddr)arg->dst, fatbin_size))==NULL) {
-        error("Failed to translate address in fatbinary registeration!\n");
-        arg->cmd = cudaErrorUnknown;
-        return;
-    }*/
-    /*very first initialize in this port*/
-/*    if (! (tctx->deviceBitmap & 1<<DEFAULT_DEVICE)) {
-        tctx->cur_dev = DEFAULT_DEVICE;
-        ctx->moduleCount = 0;
-        memset(ctx->modules, 0, sizeof(ctx->modules));
-        cuErrorExit(cuDeviceGet(&ctx->dev, DEFAULT_DEVICE));
-    }*/
     fat_bin = malloc(fatbin_size);
     cpu_physical_memory_read((hwaddr)arg->dst, fat_bin, fatbin_size);
 
@@ -404,19 +407,31 @@ static void cuda_register_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
         error("Fatbinary number is overflow.\n");
         exit(-1);
     }
+    sp_ra_mac_req(&tctx->g_sp_db, fat_bin, fatbin_size, &decrypt_msg);
+    // sp_ra_decrypt_req(&tctx->g_sp_db, fat_bin, fatbin_size, &decrypt_msg);
+    // sp_ra_decrypt_req(&tctx->g_sp_db, decrypt_msg->payload, fatbin_size, &decrypt_msg);
+
+    print("payload_tag\n");
+    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+        print("%x ", decrypt_msg->payload_tag[i]);
+    }
+    print("\n\n");
+    print("req tag\n");
+    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+        print("%x ", arg->mac[i]);
+    }
+    print("\n\n");
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
     ctx->modules[m_idx].handle              = (size_t)arg->src;
     ctx->modules[m_idx].fatbin_size         = fatbin_size;
     ctx->modules[m_idx].cudaKernelsCount    = 0;
     ctx->modules[m_idx].cudaVarsCount       = 0;
     ctx->modules[m_idx].fatbin              = fat_bin;
-    
-    //assert(*(uint64_t*)fat_bin ==  *(uint64_t*)fatBinAddr);
-    /* check binary
-    if(0==check_hmac(fat_bin, arg->srcSize)) {
-        arg->cmd = cudaErrorMissingConfiguration;
-        return ;
-    }
-    */
     arg->cmd = cudaSuccess;
 }
 
@@ -3124,7 +3139,7 @@ static void sgx_proc_msg1(VirtIOArg *arg, ThreadContext *tctx)
 
     func();
     cpu_physical_memory_read((hwaddr)arg->src, &msg1, sizeof(sgx_ra_msg1_t));
-    ret = sp_ra_proc_msg1_req((const sample_ra_msg1_t*)&msg1,
+    ret = sp_ra_proc_msg1_req(&tctx->g_sp_db, (const sample_ra_msg1_t*)&msg1,
             sizeof(sgx_ra_msg1_t),
             &p_resp_msg);
     if(0 != ret) {
@@ -3153,7 +3168,7 @@ static void sgx_proc_msg3(VirtIOArg *arg, ThreadContext *tctx)
     func();
     msg3 = (uint8_t *)malloc(arg->srcSize);
     cpu_physical_memory_read((hwaddr)arg->src, msg3, arg->srcSize);
-    ret = sp_ra_proc_msg3_req((const sample_ra_msg3_t*)msg3,
+    ret = sp_ra_proc_msg3_req(&tctx->g_sp_db, (const sample_ra_msg3_t*)msg3,
             arg->srcSize,
             &p_resp_msg);
     if(0 != ret) {

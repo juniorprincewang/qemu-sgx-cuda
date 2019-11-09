@@ -6,7 +6,8 @@
 // #define KMALLOC_SHIFT 22 // 4MB
 #define KMALLOC_SHIFT 13
 #define KMALLOC_SIZE (1UL<<KMALLOC_SHIFT)
-
+#define PAGE_SHIFT 	12
+#define PAGE_SIZE 	(1UL<<PAGE_SHIFT)
 
 #ifndef __KERNEL__
 #define __user
@@ -66,6 +67,7 @@
 
 #define VIRTIO_CUDA_PEEKATLASTERROR 		41
 #define VIRTIO_CUDA_EVENTQUERY 				42
+#define VIRTIO_CUDA_PRIMARYCONTEXT			43
 
 #define VIRTIO_CUDA_MMAPCTL 				10
 #define VIRTIO_CUDA_MUNMAPCTL 				11
@@ -73,6 +75,7 @@
 #define VIRTIO_SGX_MSG0 					80
 #define VIRTIO_SGX_MSG1 					81
 #define VIRTIO_SGX_MSG3 					82
+#define VIRTIO_SGX_MEMCPY 					83
 //sgx----------------------------------
 #define VIRTIO_CUBLAS_CREATE 				100
 #define VIRTIO_CUBLAS_DESTROY 				101
@@ -249,6 +252,8 @@ typedef struct VirtIOArg
 	_IOWR(VIRTIO_IOC_ID,41,VirtIOArg)
 #define VIRTIO_IOC_EVENTQUERY \
 	_IOWR(VIRTIO_IOC_ID,42,VirtIOArg)
+#define VIRTIO_IOC_PRIMARYCONTEXT \
+	_IOWR(VIRTIO_IOC_ID,43,VirtIOArg)
 
 // sgx ------------------------------
 #define VIRTIO_IOC_SGX_MSG0 \
@@ -257,6 +262,8 @@ typedef struct VirtIOArg
 	_IOWR(VIRTIO_IOC_ID,81,VirtIOArg)
 #define VIRTIO_IOC_SGX_MSG3 \
 	_IOWR(VIRTIO_IOC_ID,82,VirtIOArg)
+#define VIRTIO_IOC_SGX_MEMCPY \
+	_IOWR(VIRTIO_IOC_ID,83,VirtIOArg)
 // cublas ------------------------------
 #define VIRTIO_IOC_CUBLAS_CREATE \
 	_IOWR(VIRTIO_IOC_ID,100,VirtIOArg)

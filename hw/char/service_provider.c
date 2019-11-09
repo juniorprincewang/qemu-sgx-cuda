@@ -566,7 +566,7 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
     sample_report_data_t report_data = {0};
     sample_ra_att_result_msg_t *p_att_result_msg = NULL;
     ra_samp_response_header_t* p_att_result_msg_full = NULL;
-    uint32_t i;
+    // uint32_t i;
 
     if((!p_msg3) ||
        (msg3_size < sizeof(sample_ra_msg3_t)) ||
@@ -709,6 +709,7 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
             ret = SP_IAS_FAILED;
             break;
         }
+#if 0
         FILE* OUTPUT = stdout;
         fprintf(OUTPUT, "\n\n\tAttestation Report:");
         fprintf(OUTPUT, "\n\tid: 0x%0x.", attestation_report.id);
@@ -717,6 +718,7 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
                 attestation_report.revocation_reason);
         // attestation_report.info_blob;
         fprintf(OUTPUT, "\n\tpse_status: %d.",  attestation_report.pse_status);
+#endif
         // Note: This sample always assumes the PIB is sent by attestation server.  In the product
         // implementation, the attestation server could only send the PIB for certain attestation
         // report statuses.  A product SP implementation needs to handle cases
@@ -755,7 +757,7 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
         // The platform_info_blob signature will be verified by the client
         // when sent. No need to have the Service Provider to check it.  The SP
         // should pass it down to the application for further analysis.
-
+#if 0
         fprintf(OUTPUT, "\n\n\tEnclave Report:");
         fprintf(OUTPUT, "\n\tSignature Type: 0x%x", p_quote->sign_type);
         fprintf(OUTPUT, "\n\tSignature Basename: ");
@@ -797,7 +799,7 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
                 p_quote->report_body.isv_prod_id);
         fprintf(OUTPUT, "\n\tisv_svn: 0x%0x",p_quote->report_body.isv_svn);
         fprintf(OUTPUT, "\n");
-
+#endif
         // A product service provider needs to verify that its enclave properties
         // match what is expected.  The SP needs to check these values before
         // trusting the enclave.  For the sample, we always pass the policy check.
@@ -830,11 +832,13 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
            (IAS_PSE_OK == attestation_report.pse_status) &&
            (isv_policy_passed == true))
         {
+#if 0
             fprintf(stdout, "\nsp sk_key\n");
             for(i=0; i<sizeof(g_sp_db->sk_key); i++) {
                 fprintf(stdout, "\t %x", g_sp_db->sk_key[i]);
             }
             fprintf(stdout, "\n\n");
+#endif
             // fprintf(stdout, "\ng_secret:\n");
             // for (i=0; i<sizeof(g_secret); i++) {
             //     fprintf(stdout, "\t %x", g_secret[i]);

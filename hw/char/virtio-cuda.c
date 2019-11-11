@@ -425,6 +425,7 @@ static void* map_host_phys(unsigned long paddr_arry, size_t blocks, size_t size)
 
 typedef struct fatbin_buf
 {
+    uint32_t block_size;
     uint32_t total_size;
     uint32_t size;
     uint32_t nr_binary;
@@ -466,11 +467,11 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
 
     func();
     debug("src %lx, dst %lx, blocks %x\n", arg->src, arg->dst, arg->dstSize);
-    cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
-    cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
+    /*cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
+    // cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
+    cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
+    debug("devID %d, create context %p\n", ctx->dev, ctx->context);*/
     cuErrorExit(cuCtxSetCurrent(ctx->context));
-    ctx->initialized = 1;
-    ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
     if((shm = map_host_phys((unsigned long)arg->dst, arg->dstSize, buf_size))==NULL) {
         error("Failed to map address physical addr 0x%lx, virtual addr 0x%lx\n", arg->dst, arg->src);
         return;
@@ -540,6 +541,8 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
                 j, var->addr_name, var->addr_name_size, var->host_var, var->global);
         }
     }
+    ctx->initialized = 1;
+    ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
     arg->cmd = cudaSuccess;
 }
 
@@ -594,7 +597,9 @@ static void cuda_register_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
     ctx->modules[m_idx].fatbin              = fat_bin;
     arg->cmd = cudaSuccess;
 }
-
+/*
+ * unused
+ */
 static void cuda_unregister_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
 {
     int i=0, idx=0;
@@ -625,7 +630,8 @@ static void cuda_unregister_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
             }
             ctx->moduleCount--;
             if (!ctx->moduleCount && ctx->initialized) {
-                cuErrorExit(cuDevicePrimaryCtxRelease(ctx->dev));
+                // cuErrorExit(cuDevicePrimaryCtxRelease(ctx->dev));
+                // cuErrorExit(cuCtxDestroy(ctx->context));
                 deinit_primary_context(ctx);
             }
         }
@@ -800,8 +806,9 @@ static void init_device_module(CudaContext *ctx)
 static void init_primary_context(CudaContext *ctx)
 {
     if(!ctx->initialized) {
-        cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
-        cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
+        // cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
+        // cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
+        // cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
         cuErrorExit(cuCtxSetCurrent(ctx->context));
         ctx->initialized = 1;
         ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
@@ -1748,8 +1755,9 @@ static void cuda_device_reset(VirtIOArg *arg, ThreadContext *tctx)
 {
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     func();
-    cuErrorExit(cuDeviceGet(&ctx->dev, tctx->cur_dev));
-    cuErrorExit(cuDevicePrimaryCtxReset(ctx->dev));
+    // cuErrorExit(cuDeviceGet(&ctx->dev, tctx->cur_dev));
+    // cuErrorExit(cuDevicePrimaryCtxReset(ctx->dev));
+    // cuErrorExit(cuCtxDestroy(ctx->context));
     deinit_primary_context(ctx);
     tctx->deviceBitmap &= ~(1 << tctx->cur_dev);
     arg->cmd = cudaSuccess;
@@ -3518,7 +3526,8 @@ static void unload_module(ThreadContext *tctx)
             }
             ctx->moduleCount = 0;
             if(ctx->initialized) {
-                cuErrorExit(cuDevicePrimaryCtxRelease(ctx->dev));
+                // cuErrorExit(cuDevicePrimaryCtxRelease(ctx->dev));
+                // cuErrorExit(cuCtxDestroy(ctx->context));
                 deinit_primary_context(ctx);
             }
         }
@@ -3945,6 +3954,9 @@ static void init_port(VirtIOSerialPort *port)
         ctx->moduleCount = 0;
         ctx->initialized = 0;
         ctx->tctx        = tctx;
+        cuErrorExit(cuDeviceGet(&ctx->dev, i));
+        cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
+        debug("devID %d, create context %p\n", ctx->dev, ctx->context);
     }
     tctx->worker_queue  = chan_init(100);
 }
@@ -3952,9 +3964,16 @@ static void init_port(VirtIOSerialPort *port)
 static void deinit_port(VirtIOSerialPort *port)
 {
     ThreadContext *tctx = port->thread_context;
+    CudaContext *ctx = NULL;
     /*delete elements in struct list_head*/
     /*
     */
+    for (int i = 0; i < tctx->deviceCount; i++)
+    {
+        ctx = &tctx->contexts[i];
+        cuErrorExit(cuCtxDestroy(ctx->context));
+        debug("devID %d, destroy context %p\n", i, ctx->context);
+    }
     free(tctx->contexts);
     tctx->contexts = NULL;
     chan_dispose(tctx->worker_queue);

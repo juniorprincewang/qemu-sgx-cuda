@@ -52,6 +52,7 @@ typedef enum sample_status_t
     SAMPLE_ERROR_UNEXPECTED         ,      // Unexpected error
     SAMPLE_ERROR_INVALID_PARAMETER  ,      // The parameter is incorrect
     SAMPLE_ERROR_OUT_OF_MEMORY      ,      // Not enough memory is available to complete this operation
+    SAMPLE_ERROR_MAC_MISMATCH       ,      // MAC mismatch
 
 } sample_status_t;
 

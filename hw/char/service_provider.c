@@ -33,8 +33,6 @@
 
 #include "hw/virtio/service_provider.h"
 
-#include "hw/virtio/sample_libcrypto.h"
-
 #include "hw/virtio/ecp.h"
 
 #include <stdio.h>
@@ -43,6 +41,8 @@
 #include <time.h>
 #include <string.h>
 #include "hw/virtio/ias_ra.h"
+#include <openssl/bio.h>
+#include <openssl/evp.h>
 
 #ifndef SAFE_FREE
 #define SAFE_FREE(ptr) {if (NULL != (ptr)) {free(ptr); (ptr) = NULL;}}
@@ -895,36 +895,216 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
     return ret;
 }
 
+
+/* Rijndael AES-GCM
+* Parameters:
+*   Return: sample_status_t  - SAMPLE_SUCCESS or failure 
+*   Inputs: sample_aes_gcm_128bit_key_t *p_key - Pointer to key used in encryption/decryption operation
+*           uint8_t *p_src - Pointer to input stream to be encrypted/decrypted
+*           uint32_t src_len - Length of input stream to be encrypted/decrypted
+*           uint8_t *p_iv - Pointer to initialization vector to use
+*           uint32_t iv_len - Length of initialization vector
+*           uint8_t *p_aad - Pointer to input stream of additional authentication data
+*           uint32_t aad_len - Length of additional authentication data stream
+*           sample_aes_gcm_128bit_tag_t *p_in_mac - Pointer to expected MAC in decryption process
+*   Output: uint8_t *p_dst - Pointer to cipher text. Size of buffer should be >= src_len.
+*           sample_aes_gcm_128bit_tag_t *p_out_mac - Pointer to MAC generated from encryption process
+* NOTE: Wrapper is responsible for confirming decryption tag matches encryption tag */
+sample_status_t rijndael128GCM_encrypt(const sample_aes_gcm_128bit_key_t *p_key, const uint8_t *p_src, uint32_t src_len,
+                                        uint8_t *p_dst, const uint8_t *p_iv, uint32_t iv_len, const uint8_t *p_aad, uint32_t aad_len,
+                                        sample_aes_gcm_128bit_tag_t *p_out_mac)
+{
+    if ((src_len >= INT_MAX) || (aad_len >= INT_MAX) || (p_key == NULL) || ((src_len > 0) && (p_dst == NULL)) || ((src_len > 0) && (p_src == NULL))
+        || (p_out_mac == NULL) || (iv_len != SAMPLE_AESGCM_IV_SIZE) || ((aad_len > 0) && (p_aad == NULL))
+        || (p_iv == NULL) || ((p_src == NULL) && (p_aad == NULL)))
+    {
+        return SAMPLE_ERROR_INVALID_PARAMETER;
+    }
+    sample_status_t ret = SAMPLE_ERROR_UNEXPECTED;
+    int len = 0;
+    EVP_CIPHER_CTX * pState = NULL;
+
+    do {
+        // Create and init ctx
+        //
+        if (!(pState = EVP_CIPHER_CTX_new())) {
+            ret = SAMPLE_ERROR_OUT_OF_MEMORY;
+            break;
+        }
+
+        // Initialise encrypt, key and IV
+        //
+        if (1 != EVP_EncryptInit_ex(pState, EVP_aes_128_gcm(), NULL, (unsigned char*)p_key, p_iv)) {
+            break;
+        }
+
+        // Provide AAD data if exist
+        //
+        if (NULL != p_aad) {
+            if (1 != EVP_EncryptUpdate(pState, NULL, &len, p_aad, aad_len)) {
+                break;
+            }
+        }
+        if (src_len > 0) {
+            // Provide the message to be encrypted, and obtain the encrypted output.
+            //
+            if (1 != EVP_EncryptUpdate(pState, p_dst, &len, p_src, src_len)) {
+                break;
+            }
+        }
+        // Finalise the encryption
+        //
+        if (1 != EVP_EncryptFinal_ex(pState, p_dst + len, &len)) {
+            break;
+        }
+
+        // Get tag
+        //
+        if (1 != EVP_CIPHER_CTX_ctrl(pState, EVP_CTRL_GCM_GET_TAG, SAMPLE_AESGCM_MAC_SIZE, p_out_mac)) {
+            break;
+        }
+        ret = SAMPLE_SUCCESS;
+    } while (0);
+
+    // Clean up and return
+    //
+    if (pState) {
+            EVP_CIPHER_CTX_free(pState);
+    }
+    return ret;
+}
+
+sample_status_t rijndael128GCM_decrypt(const sample_aes_gcm_128bit_key_t *p_key, const uint8_t *p_src,
+                                        uint32_t src_len, uint8_t *p_dst, const uint8_t *p_iv, uint32_t iv_len,
+                                        const uint8_t *p_aad, uint32_t aad_len, const sample_aes_gcm_128bit_tag_t *p_in_mac)
+{
+    uint8_t l_tag[SAMPLE_AESGCM_MAC_SIZE];
+
+    if ((src_len >= INT_MAX) || (aad_len >= INT_MAX) || (p_key == NULL) || ((src_len > 0) && (p_dst == NULL)) || ((src_len > 0) && (p_src == NULL))
+        || (p_in_mac == NULL) || (iv_len != SAMPLE_AESGCM_IV_SIZE) || ((aad_len > 0) && (p_aad == NULL))
+        || (p_iv == NULL) || ((p_src == NULL) && (p_aad == NULL)))
+    {
+        return SAMPLE_ERROR_INVALID_PARAMETER;
+    }
+    int len = 0;
+    sample_status_t ret = SAMPLE_ERROR_UNEXPECTED;
+    EVP_CIPHER_CTX * pState = NULL;
+
+    // Autenthication Tag returned by Decrypt to be compared with Tag created during seal
+    //
+    memset(&l_tag, 0, SAMPLE_AESGCM_MAC_SIZE);
+    memcpy(l_tag, p_in_mac, SAMPLE_AESGCM_MAC_SIZE);
+
+    do {
+        // Create and initialise the context
+        //
+        if (!(pState = EVP_CIPHER_CTX_new())) {
+            ret = SAMPLE_ERROR_OUT_OF_MEMORY;
+            break;
+        }
+
+        // Initialise decrypt, key and IV
+        //
+        if (!EVP_DecryptInit_ex(pState, EVP_aes_128_gcm(), NULL, (unsigned char*)p_key, p_iv)) {
+            break;
+        }
+
+        // Provide AAD data if exist
+        //
+        if (NULL != p_aad) {
+            if (!EVP_DecryptUpdate(pState, NULL, &len, p_aad, aad_len)) {
+                break;
+            }
+        }
+
+        // Decrypt message, obtain the plaintext output
+        //
+        if (!EVP_DecryptUpdate(pState, p_dst, &len, p_src, src_len)) {
+            break;
+        }
+
+        // Update expected tag value
+        //
+        if (!EVP_CIPHER_CTX_ctrl(pState, EVP_CTRL_GCM_SET_TAG, SAMPLE_AESGCM_MAC_SIZE, l_tag)) {
+            break;
+        }
+
+        // Finalise the decryption. A positive return value indicates success,
+        // anything else is a failure - the plaintext is not trustworthy.
+        //
+        if (EVP_DecryptFinal_ex(pState, p_dst + len, &len) <= 0) {
+            ret = SAMPLE_ERROR_MAC_MISMATCH;
+            break;
+        }
+        ret = SAMPLE_SUCCESS;
+    } while (0);
+
+    // Clean up and return
+    //
+    if (pState != NULL) {
+        EVP_CIPHER_CTX_free(pState);
+    }
+    memset(&l_tag, 0, SAMPLE_AESGCM_MAC_SIZE);
+    return ret;
+}
+
 int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
-                        sp_aes_gcm_data_t **pp_resp_msg)
+                        uint8_t *p_dst,
+                        uint8_t *tag)
 {
     uint8_t aes_gcm_iv[SAMPLE_SP_IV_SIZE] = {0};
     int ret;
-    sp_aes_gcm_data_t *encrypt_msg;
-    uint32_t aes_gcm_data_size = sizeof(sp_aes_gcm_data_t);
-    encrypt_msg = (sp_aes_gcm_data_t*)malloc(aes_gcm_data_size + msg_size);
-    if(!encrypt_msg)
-    {
-        fprintf(stderr, "\nError, out of memory in [%s].", __FUNCTION__);
-        ret = SP_INTERNAL_ERROR;
-        return ret;
-    }
-    memset(encrypt_msg, 0, aes_gcm_data_size + msg_size);
-    encrypt_msg->payload_size = msg_size;
-    ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
+    // uint8_t payload_tag[SAMPLE_SP_TAG_SIZE];
+    // ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
+    //                     p_msg,
+    //                     msg_size,
+    //                     p_dst,
+    //                     &aes_gcm_iv[0],
+    //                     SAMPLE_SP_IV_SIZE,
+    //                     NULL,
+    //                     0,
+    //                     &payload_tag);
+    ret = rijndael128GCM_decrypt(&g_sp_db->sk_key,
                         p_msg,
                         msg_size,
-                        encrypt_msg->payload,
+                        p_dst,
                         &aes_gcm_iv[0],
                         SAMPLE_SP_IV_SIZE,
                         NULL,
                         0,
-                        &encrypt_msg->payload_tag);
-    // tag check
-    *pp_resp_msg = encrypt_msg;
+                        (sample_aes_gcm_128bit_tag_t *)tag);
     return ret;
 }
+
+int sp_ra_encrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
+                        uint32_t msg_size,
+                        uint8_t *p_dst,
+                        uint8_t *tag)
+{
+    uint8_t aes_gcm_iv[SAMPLE_SP_IV_SIZE] = {0};
+    int ret;
+    // ret = rijndael128GCM_encrypt(&g_sp_db->sk_key,
+    //                     p_msg,
+    //                     msg_size,
+    //                     p_dst,
+    //                     &aes_gcm_iv[0],
+    //                     SAMPLE_SP_IV_SIZE,
+    //                     NULL,
+    //                     0,
+    //                     (sample_aes_gcm_128bit_tag_t *)tag);
+    ret = sample_rijndael128GCM_encrypt(&g_sp_db->sk_key,
+                        p_msg,
+                        msg_size,
+                        p_dst,
+                        &aes_gcm_iv[0],
+                        SAMPLE_SP_IV_SIZE,
+                        NULL,
+                        0,
+                        (sample_aes_gcm_128bit_tag_t *)tag);
+    return ret;
+}
+
 
 int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,

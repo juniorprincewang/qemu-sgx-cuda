@@ -37,6 +37,7 @@
 #include "remote_attestation_result.h"
 #include "ias_ra.h"
 #include "network_ra.h"
+#include "hw/virtio/sample_libcrypto.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -143,7 +144,12 @@ int sp_ra_proc_msg3_req(sp_db_item_t *g_sp_db, const sample_ra_msg3_t *p_msg3,
 
 int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
-                        sp_aes_gcm_data_t **pp_resp_msg);
+                        uint8_t *p_dst,
+                        uint8_t *mac_tag);
+int sp_ra_encrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
+                        uint32_t msg_size,
+                        uint8_t *p_dst,
+                        uint8_t *mac_tag);
 
 int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
@@ -152,6 +158,13 @@ int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
 int sp_ra_free_msg2(
     sample_ra_msg2_t *p_msg2);
 
+sample_status_t rijndael128GCM_decrypt(const sample_aes_gcm_128bit_key_t *p_key, const uint8_t *p_src,
+                                        uint32_t src_len, uint8_t *p_dst, const uint8_t *p_iv, uint32_t iv_len,
+                                        const uint8_t *p_aad, uint32_t aad_len, const sample_aes_gcm_128bit_tag_t *p_in_mac);
+
+sample_status_t rijndael128GCM_encrypt(const sample_aes_gcm_128bit_key_t *p_key, const uint8_t *p_src, uint32_t src_len,
+                                        uint8_t *p_dst, const uint8_t *p_iv, uint32_t iv_len, const uint8_t *p_aad, uint32_t aad_len,
+                                        sample_aes_gcm_128bit_tag_t *p_out_mac);
 
 
 typedef int (*sample_enroll)(int sp_credentials, sample_spid_t* spid,

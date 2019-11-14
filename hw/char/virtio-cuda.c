@@ -94,33 +94,6 @@ static int global_initialized = 0;
 static int global_deinitialized = 0;
 
 
-#define cudaCheck(call, pipes) { \
-    cudaError_t err; \
-    if ( (err = (call)) != cudaSuccess) { \
-        fprintf(stderr, "Got error %s:%s at %s:%d\n", cudaGetErrorName(err), \
-                cudaGetErrorString(err), \
-                __FILE__, __LINE__); \
-        write(pipes, &err, sizeof(cudaError_t)); \
-        break;\
-    } \
-    debug("sending err %d\n", err);\
-    write(pipes, &err, sizeof(cudaError_t)); \
-}
-
-#define cuCheck(call, pipes) { \
-    cudaError_t err; \
-    if ( (err = (call)) != cudaSuccess) { \
-        char *str; \
-        cuGetErrorName(err, (const char**)&str); \
-        fprintf(stderr, "Got error %s at %s:%d\n", str, \
-                __FILE__, __LINE__); \
-        write(pipes, &err, sizeof(cudaError_t)); \
-        break;\
-    } \
-    debug("sending err %d\n", err);\
-    write(pipes, &err, sizeof(cudaError_t)); \
-}
-
 #define cuErrorExit(call) { \
     cudaError_t err; \
     if ( (err = (call)) != cudaSuccess) { \
@@ -168,9 +141,9 @@ static inline void __cuErrorCheck(cudaError_t err, const int line)
 }
 
 #define execute_with_context(call, context) {\
-    cuErrorExit(cuCtxPushCurrent(context));\
+    cuError(cuCtxPushCurrent(context));\
     cudaError( (call) );\
-    cuErrorExit(cuCtxPopCurrent(&context));\
+    cuError(cuCtxPopCurrent(&context));\
 }
 
 #define HMAC_SHA256_SIZE 32 // hmac-sha256 output size is 32 bytes
@@ -353,6 +326,7 @@ static void deinit_primary_context(CudaContext *ctx)
 {
     VOL *vol, *vol2;
     HVOL *hvol, *hvol2;
+    HPLOL *plvol, *plvol2;
     ctx->dev         = 0;
     ctx->moduleCount = 0;
     ctx->initialized = 0;
@@ -362,12 +336,27 @@ static void deinit_primary_context(CudaContext *ctx)
     memset(ctx->cudaEvent, 0, sizeof(cudaEvent_t)*CudaEventMaxNum);
     // free struct list
     list_for_each_entry_safe(vol, vol2, &ctx->vol, list) {
+        debug("clean vol %lx\n", vol->addr);
+        execute_with_context( cudaFree((void*)(vol->addr)), ctx->context);
         list_del(&vol->list);
         free(vol);
     }
     list_for_each_entry_safe(hvol, hvol2, &ctx->host_vol, list) {
+        debug("munmap hvol %lx\n", hvol->addr);
+        munmap((void*)hvol->addr, hvol->size);
+        close(hvol->fd);
         list_del(&hvol->list);
         free(hvol);
+    }
+    list_for_each_entry_safe(plvol, plvol2, &ctx->pl_vol, list) {
+        debug("munmap plvol %lx\n", hvol->virtual_addr);
+        for (int i=0; i<plvol->blocks; i++) {
+            debug("ptr %lx\n", plvol->addr[i]);
+            execute_with_context(cudaHostUnregister((void*)plvol->addr[i]), ctx->context);
+        }
+        free(plvol->addr);
+        list_del(&plvol->list);
+        free(plvol);
     }
     memset(ctx->modules, 0, sizeof(ctx->modules));
 }
@@ -477,7 +466,7 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
     // cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
     cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
     debug("devID %d, create context %p\n", ctx->dev, ctx->context);*/
-    cuErrorExit(cuCtxSetCurrent(ctx->context));
+    cuError(cuCtxSetCurrent(ctx->context));
     if((shm = map_host_phys((unsigned long)arg->dst, arg->dstSize, buf_size))==NULL) {
         error("Failed to map address physical addr 0x%lx, virtual addr 0x%lx\n", arg->dst, arg->src);
         return;
@@ -662,7 +651,7 @@ static void cuda_unregister_fatbinary(VirtIOArg *arg, ThreadContext *tctx)
                         free(mod->cudaVars[j].addr_name);
                     }
                     if(ctx->initialized)
-                        cuErrorExit(cuModuleUnload(mod->module));
+                        cuError(cuModuleUnload(mod->module));
                     // free(mod->fatbin);
                     memset(mod, 0, sizeof(CudaModule));
                     break;
@@ -808,7 +797,7 @@ static void cuda_set_device(VirtIOArg *arg, ThreadContext *tctx)
         ctx = &tctx->contexts[dev_id];
         memcpy(ctx->modules, &tctx->contexts[DEFAULT_DEVICE].modules, 
                 sizeof(ctx->modules));
-        cuErrorExit(cuDeviceGet(&ctx->dev, dev_id));
+        cuError(cuDeviceGet(&ctx->dev, dev_id));
         // init_device_module(ctx);
     }
     cudaError(err = cudaSetDevice(dev_id));
@@ -849,7 +838,7 @@ static void init_primary_context(CudaContext *ctx)
         // cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
         // cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
         // cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
-        cuErrorExit(cuCtxSetCurrent(ctx->context));
+        cuError(cuCtxSetCurrent(ctx->context));
         ctx->initialized = 1;
         ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
         init_device_module(ctx);
@@ -874,6 +863,7 @@ static void cuda_set_device_flags(VirtIOArg *arg, ThreadContext *tctx)
 
 static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
 {
+    cudaError_t err=0;
     uint32_t para_num=0, para_idx=0;
     uint32_t para_size=0, conf_size=0;
     cudaStream_t stream_kernel = 0;
@@ -961,15 +951,16 @@ static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
     }
     debug("now stream=0x%lx\n", (uint64_t)(stream_kernel));
 
-    cuErrorExit(cuCtxPushCurrent(ctx->context));
-    cuErrorExit(cuLaunchKernel( kernel->kernel_func,
+    cuError(cuCtxPushCurrent(ctx->context));
+    cuError(cuLaunchKernel( kernel->kernel_func,
                             conf->gridDim.x, conf->gridDim.y, conf->gridDim.z,
                             conf->blockDim.x, conf->blockDim.y, conf->blockDim.z,
                             conf->sharedMem,
                             stream_kernel,
                             para_buf, NULL));
-    cuErrorExit(cuCtxPopCurrent(&ctx->context));
-    arg->cmd = cudaSuccess;
+    cudaError(err = cudaGetLastError());
+    cuError(cuCtxPopCurrent(&ctx->context));
+    arg->cmd = err;
 }
 
 static VOL *find_vol_by_vaddr(uint64_t vaddr, struct list_head *header)
@@ -1026,6 +1017,24 @@ static void remove_hvol_by_vaddr(uint64_t vaddr, struct list_head *header)
         }
     }
     error("Found no memory maped ptr=0x%lx\n", vaddr);
+}
+
+static void remove_plvol_by_vaddr(uint64_t vaddr, struct list_head *header, CudaContext * ctx)
+{
+    HPLOL *plvol, *plvol2;
+    list_for_each_entry_safe(plvol, plvol2, header, list) {
+        if (plvol->virtual_addr == vaddr) {
+            debug("Found memory(page) maped ptr=0x%lx\n", (uint64_t)plvol->virtual_addr);
+            for(int i=0; i<plvol->blocks; i++) {
+                execute_with_context(cudaHostUnregister((void *)plvol->addr[i]), ctx->context);
+            }
+            free(plvol->addr);
+            list_del(&plvol->list);
+            free(plvol);
+            return;
+        }
+    }
+    error("Found no memory(page) maped ptr=0x%lx\n", vaddr);
 }
 
 static void cuda_memcpy_safe(VirtIOArg *arg, ThreadContext *tctx)
@@ -1366,27 +1375,47 @@ static void cuda_memcpy_async(VirtIOArg *arg, ThreadContext *tctx)
                 arg->cmd = cudaErrorInvalidValue;
                 return;
             }
+            execute_with_context((err= cudaMemcpyAsync(dst, src, size, 
+                                cudaMemcpyHostToDevice, stream)), ctx->context);
+            debug("src = %p\n", src);
+            debug("dst = %p\n", dst);
+            arg->cmd = err;
+            if(err != cudaSuccess) {
+                error("memcpy async HtoD error!\n");
+            }
+            return;
         } else {
-            if (size >= KMALLOC_SIZE) {
-                uint32_t rsize = size;
-                int blocks = arg->paramSize;
-                hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
-                if(!gpa_array) {
-                    error("Failed to get gpa_array.\n");
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
-                debug("page_offset %x\n", page_offset);
-                if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                    error("No such physical address 0x%lx.\n", gpa_array[0]);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                addr = addr + page_offset;
-                uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+            uint32_t rsize = size;
+            int blocks = arg->paramSize;
+            hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
+            if(!gpa_array) {
+                error("Failed to get gpa_array.\n");
+                arg->cmd = cudaErrorInvalidValue;
+                return;
+            }
+            uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
+            debug("page_offset %x\n", page_offset);
+            if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
+                error("No such physical address 0x%lx.\n", gpa_array[0]);
+                arg->cmd = cudaErrorInvalidValue;
+                return;
+            }
+            addr = addr + page_offset;
+            uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+            execute_with_context((err= cudaMemcpyAsync(dst, addr, len, 
+                        cudaMemcpyHostToDevice, stream)), ctx->context);
+            if(err != cudaSuccess) {
+                error("memcpy cudaMemcpyHostToDevice error!\n");
+                arg->cmd = err;
+                return;
+            }
+            dst     += len;
+            rsize   -= len;
+            for(int i=1; i<blocks; i++) {
+                addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
+                len = min(rsize, PAGE_SIZE);
                 execute_with_context((err= cudaMemcpyAsync(dst, addr, len, 
-                            cudaMemcpyHostToDevice, stream)), ctx->context);
+                        cudaMemcpyHostToDevice, stream)), ctx->context);
                 if(err != cudaSuccess) {
                     error("memcpy cudaMemcpyHostToDevice error!\n");
                     arg->cmd = err;
@@ -1394,38 +1423,10 @@ static void cuda_memcpy_async(VirtIOArg *arg, ThreadContext *tctx)
                 }
                 dst     += len;
                 rsize   -= len;
-                for(int i=1; i<blocks; i++) {
-                    addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                    len = min(rsize, PAGE_SIZE);
-                    execute_with_context((err= cudaMemcpyAsync(dst, addr, len, 
-                            cudaMemcpyHostToDevice, stream)), ctx->context);
-                    if(err != cudaSuccess) {
-                        error("memcpy cudaMemcpyHostToDevice error!\n");
-                        arg->cmd = err;
-                        return;
-                    }
-                    dst     += len;
-                    rsize   -= len;
-                }
-                arg->cmd = err;
-                return;
-            } else {
-                if((src= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                    error("No such physical address 0x%lx.\n", arg->param2);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
             }
+            arg->cmd = err;
+            return;
         }
-        execute_with_context((err= cudaMemcpyAsync(dst, src, size, 
-                            cudaMemcpyHostToDevice, stream)), ctx->context);
-        debug("src = %p\n", src);
-        debug("dst = %p\n", dst);
-        arg->cmd = err;
-        if(err != cudaSuccess) {
-            error("memcpy async HtoD error!\n");
-        }
-        return;
     } else if (arg->flag == cudaMemcpyDeviceToHost) {
         if((src=(void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==0) {
             error("Failed to find virtual addr %p in vol or hvol\n",
@@ -1439,27 +1440,50 @@ static void cuda_memcpy_async(VirtIOArg *arg, ThreadContext *tctx)
                 arg->cmd = cudaErrorInvalidValue;
                 return;
             }
+            execute_with_context( (err=cudaMemcpyAsync(dst, src, size, 
+                            cudaMemcpyDeviceToHost, stream)), ctx->context );
+            debug("src = %p\n", src);
+            debug("dst = %p\n", dst);
+            debug("size = 0x%x\n", size);
+            debug("(int)dst[0] = 0x%x\n", *(int*)dst);
+            debug("(int)dst[1] = 0x%x\n", *((int*)dst+1));
+            arg->cmd = err;
+            if (err != cudaSuccess) {
+                error("memcpy async DtoH error!\n");
+            }
+            return;
         } else {
-            if (size >= KMALLOC_SIZE) {
-                uint32_t rsize = size;
-                int blocks = arg->paramSize;
-                hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
-                if(!gpa_array) {
-                    error("Failed to get gpa_array.\n");
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                uint32_t page_offset = arg->dst & (BIT(PAGE_SHIFT) - 1);
-                debug("page_offset %x\n", page_offset);
-                if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                    error("No such physical address 0x%lx.\n", gpa_array[0]);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                addr = addr + page_offset;
-                uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+            uint32_t rsize = size;
+            int blocks = arg->paramSize;
+            hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
+            if(!gpa_array) {
+                error("Failed to get gpa_array.\n");
+                arg->cmd = cudaErrorInvalidValue;
+                return;
+            }
+            uint32_t page_offset = arg->dst & (BIT(PAGE_SHIFT) - 1);
+            debug("page_offset %x\n", page_offset);
+            if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
+                error("No such physical address 0x%lx.\n", gpa_array[0]);
+                arg->cmd = cudaErrorInvalidValue;
+                return;
+            }
+            addr = addr + page_offset;
+            uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+            execute_with_context( (err=cudaMemcpyAsync(addr, src, len, 
+                    cudaMemcpyDeviceToHost, stream)), ctx->context );
+            if(err != cudaSuccess) {
+                error("memcpy cudaMemcpyHostToDevice error!\n");
+                arg->cmd = err;
+                return;
+            }
+            src     += len;
+            rsize   -= len;
+            for(int i=1; i<blocks; i++) {
+                addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
+                len = min(rsize, PAGE_SIZE);
                 execute_with_context( (err=cudaMemcpyAsync(addr, src, len, 
-                        cudaMemcpyDeviceToHost, stream)), ctx->context );
+                    cudaMemcpyDeviceToHost, stream)), ctx->context );
                 if(err != cudaSuccess) {
                     error("memcpy cudaMemcpyHostToDevice error!\n");
                     arg->cmd = err;
@@ -1467,41 +1491,10 @@ static void cuda_memcpy_async(VirtIOArg *arg, ThreadContext *tctx)
                 }
                 src     += len;
                 rsize   -= len;
-                for(int i=1; i<blocks; i++) {
-                    addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                    len = min(rsize, PAGE_SIZE);
-                    execute_with_context( (err=cudaMemcpyAsync(addr, src, len, 
-                        cudaMemcpyDeviceToHost, stream)), ctx->context );
-                    if(err != cudaSuccess) {
-                        error("memcpy cudaMemcpyHostToDevice error!\n");
-                        arg->cmd = err;
-                        return;
-                    }
-                    src     += len;
-                    rsize   -= len;
-                }
-                arg->cmd = err;
-                return;
-            } else {
-                if((dst= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                    error("No such physical address 0x%lx.\n", arg->param2);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
             }
+            arg->cmd = err;
+            return;
         }
-        execute_with_context( (err=cudaMemcpyAsync(dst, src, size, 
-                        cudaMemcpyDeviceToHost, stream)), ctx->context );
-        debug("src = %p\n", src);
-        debug("dst = %p\n", dst);
-        debug("size = 0x%x\n", size);
-        debug("(int)dst[0] = 0x%x\n", *(int*)dst);
-        debug("(int)dst[1] = 0x%x\n", *((int*)dst+1));
-        arg->cmd = err;
-        if (err != cudaSuccess) {
-            error("memcpy async DtoH error!\n");
-        }
-        return;
     } else if (arg->flag == cudaMemcpyDeviceToDevice) {
         if((src = (void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==0) {
             error("Failed to find virtual addr %p in vol\n",
@@ -1879,68 +1872,83 @@ static void cuda_host_register(VirtIOArg *arg, VirtIOSerialPort *port)
             arg->cmd = cudaErrorInvalidValue;
             return;
         }
+        debug("ptr = %p\n", ptr);
+        execute_with_context((err = cudaHostRegister(ptr, size, flags)), ctx->context);
+        arg->cmd = err;
+        if (err != cudaSuccess) {
+            error("host register error.\n");
+        }
+        HPLOL *plvol  = (HPLOL *)malloc(sizeof(HPLOL));
+        plvol->addr  = (unsigned long *)malloc(sizeof(unsigned long));
+        plvol->virtual_addr  = arg->src;
+        plvol->size       = size;
+        plvol->blocks     = 1;
+        plvol->addr[0]    = (unsigned long)ptr;
+        list_add_tail(&plvol->list, &ctx->pl_vol);
+        return;
     } else {
-        // if (size >= KMALLOC_SIZE) {
-            uint32_t rsize = size;
-            int blocks = arg->dstSize;
-            hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->dst, blocks*sizeof(unsigned long));
-            if(!gpa_array) {
-                error("Failed to get gpa_array.\n");
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-            uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
-            debug("page_offset %x\n", page_offset);
-            if((ptr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                error("No such physical address 0x%lx.\n", gpa_array[0]);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-            ptr = ptr + page_offset;
-            uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+        uint32_t rsize = size;
+        int blocks = arg->dstSize;
+        hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->dst, blocks*sizeof(unsigned long));
+        if(!gpa_array) {
+            error("Failed to get gpa_array.\n");
+            arg->cmd = cudaErrorInvalidValue;
+            return;
+        }
+        uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
+        debug("page_offset %x\n", page_offset);
+        if((ptr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
+            error("No such physical address 0x%lx.\n", gpa_array[0]);
+            arg->cmd = cudaErrorInvalidValue;
+            return;
+        }
+        HPLOL *plvol  = (HPLOL *)malloc(sizeof(HPLOL));
+        plvol->addr  = (unsigned long *)malloc(sizeof(unsigned long)*blocks);
+        plvol->virtual_addr  = arg->src;
+        plvol->size  = size;
+        plvol->blocks    = blocks;
+        ptr = ptr + page_offset;
+        uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+        execute_with_context((err = cudaHostRegister(ptr, len, flags)), ctx->context);
+        if(err != cudaSuccess) {
+            error("host register error.\n");
+            arg->cmd = err;
+            free(plvol->addr);
+            free(plvol);
+            return;
+        }
+        plvol->addr[0] = (unsigned long)ptr;
+        rsize   -= len;
+        for(int i=1; i<blocks; i++) {
+            ptr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
+            len = min(rsize, PAGE_SIZE);
             execute_with_context((err = cudaHostRegister(ptr, len, flags)), ctx->context);
             if(err != cudaSuccess) {
                 error("host register error.\n");
                 arg->cmd = err;
+                for(int j=0; j<i; j++) {
+                    execute_with_context((err = cudaHostUnregister((void *)plvol->addr[j])), ctx->context);
+                }
+                free(plvol->addr);
+                free(plvol);
                 return;
             }
+            plvol->addr[i] = (unsigned long)ptr;
             rsize   -= len;
-            for(int i=1; i<blocks; i++) {
-                ptr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                len = min(rsize, PAGE_SIZE);
-                execute_with_context((err = cudaHostRegister(ptr, len, flags)), ctx->context);
-                if(err != cudaSuccess) {
-                    error("host register error.\n");
-                    arg->cmd = err;
-                    return;
-                }
-                rsize   -= len;
-            }
-            arg->cmd = err;
-            return;
-        // } else {
-        //     if((ptr= gpa_to_hva((hwaddr)arg->dst, size)) == NULL) {
-        //         error("No such physical address 0x%lx.\n", arg->dst);
-        //         arg->cmd = cudaErrorInvalidValue;
-        //         return;
-        //     }
-        // }
-    }
-    debug("ptr = %p\n", ptr);
-    execute_with_context((err = cudaHostRegister(ptr, size, flags)), ctx->context);
-    arg->cmd = err;
-    if (err != cudaSuccess) {
-        error("host register error.\n");
+        }
+        list_add_tail(&plvol->list, &ctx->pl_vol);
+        arg->cmd = err;
+        return;
     }
 }
 
 static void cuda_host_unregister(VirtIOArg *arg, VirtIOSerialPort *port)
 {
-    cudaError_t err=-1;
+    // cudaError_t err=-1;
     ThreadContext *tctx = port->thread_context;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    void *ptr;
-    size_t size;
+    // void *ptr;
+    // size_t size;
 
     func();
     init_primary_context(ctx);
@@ -1948,6 +1956,7 @@ static void cuda_host_unregister(VirtIOArg *arg, VirtIOSerialPort *port)
           "dstSize=0x%x, kind=0x%lx, param=0x%lx\n",
           arg->src, arg->srcSize, arg->dst, 
           arg->dstSize, arg->flag, arg->param);
+    /*
     size = arg->srcSize;
     // get host address
     if(arg->param) {
@@ -1956,25 +1965,39 @@ static void cuda_host_unregister(VirtIOArg *arg, VirtIOSerialPort *port)
             arg->cmd = cudaErrorInvalidValue;
             return;
         }
+        execute_with_context((err = cudaHostUnregister(ptr)), ctx->context);
+        arg->cmd = err;
+        if (err != cudaSuccess) {
+            error("Failed to unregister memory.\n");
+        }
     } else {
-        // if (size >= KMALLOC_SIZE) {
-            uint32_t rsize = size;
-            int blocks = arg->dstSize;
-            hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->dst, blocks*sizeof(unsigned long));
-            if(!gpa_array) {
-                error("Failed to get gpa_array.\n");
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-            uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
-            debug("page_offset %x\n", page_offset);
-            if((ptr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                error("No such physical address 0x%lx.\n", gpa_array[0]);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-            ptr = ptr + page_offset;
-            uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+        uint32_t rsize = size;
+        int blocks = arg->dstSize;
+        hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->dst, blocks*sizeof(unsigned long));
+        if(!gpa_array) {
+            error("Failed to get gpa_array.\n");
+            arg->cmd = cudaErrorInvalidValue;
+            return;
+        }
+        uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
+        debug("page_offset %x\n", page_offset);
+        if((ptr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
+            error("No such physical address 0x%lx.\n", gpa_array[0]);
+            arg->cmd = cudaErrorInvalidValue;
+            return;
+        }
+        ptr = ptr + page_offset;
+        uint32_t len = min(rsize, PAGE_SIZE - page_offset);
+        execute_with_context((err = cudaHostUnregister(ptr)), ctx->context);
+        if(err != cudaSuccess) {
+            error("Failed to unregister memory.\n");
+            arg->cmd = err;
+            return;
+        }
+        rsize   -= len;
+        for(int i=1; i<blocks; i++) {
+            ptr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
+            len = min(rsize, PAGE_SIZE);
             execute_with_context((err = cudaHostUnregister(ptr)), ctx->context);
             if(err != cudaSuccess) {
                 error("Failed to unregister memory.\n");
@@ -1982,32 +2005,12 @@ static void cuda_host_unregister(VirtIOArg *arg, VirtIOSerialPort *port)
                 return;
             }
             rsize   -= len;
-            for(int i=1; i<blocks; i++) {
-                ptr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                len = min(rsize, PAGE_SIZE);
-                execute_with_context((err = cudaHostUnregister(ptr)), ctx->context);
-                if(err != cudaSuccess) {
-                    error("Failed to unregister memory.\n");
-                    arg->cmd = err;
-                    return;
-                }
-                rsize   -= len;
-            }
-            arg->cmd = err;
-            return;
-        // } else {
-        //     if((ptr= gpa_to_hva((hwaddr)arg->dst, size)) == NULL) {
-        //         error("No such physical address 0x%lx.\n", arg->dst);
-        //         arg->cmd = cudaErrorInvalidValue;
-        //         return;
-        //     }
-        // }
+        }
+        arg->cmd = err;
     }
-    execute_with_context((err = cudaHostUnregister(ptr)), ctx->context);
-    arg->cmd = err;
-    if (err != cudaSuccess) {
-        error("Failed to unregister memory.\n");
-    }
+    */
+    remove_plvol_by_vaddr(arg->src, &ctx->pl_vol, ctx);
+    arg->cmd = cudaSuccess;
 }
 static void cuda_free(VirtIOArg *arg, ThreadContext *tctx)
 {
@@ -2335,9 +2338,9 @@ static void cuda_event_query(VirtIOArg *arg, ThreadContext *tctx)
     }
     event = ctx->cudaEvent[pos-1];
     debug("query event 0x%lx\n", (uint64_t)event);
-    cuErrorExit(cuCtxPushCurrent(ctx->context));
+    cuError(cuCtxPushCurrent(ctx->context));
     err=cudaEventQuery(event);
-    cuErrorExit(cuCtxPopCurrent(&ctx->context));
+    cuError(cuCtxPopCurrent(&ctx->context));
     arg->cmd = err;
 }
 
@@ -3831,7 +3834,7 @@ static void unload_module(ThreadContext *tctx)
                     free(mod->cudaVars[j].addr_name);
                 }
                 if (ctx->initialized)
-                    cuErrorExit(cuModuleUnload(mod->module));
+                    cuError(cuModuleUnload(mod->module));
 #ifdef VIRTIO_ENC
                 free(mod->fatbin);
 #endif
@@ -4264,6 +4267,7 @@ static void init_port(VirtIOSerialPort *port)
         memset(ctx->cudaStream,          0,  sizeof(cudaStream_t)*CudaStreamMaxNum);
         INIT_LIST_HEAD(&ctx->vol);
         INIT_LIST_HEAD(&ctx->host_vol);
+        INIT_LIST_HEAD(&ctx->pl_vol);
         ctx->moduleCount = 0;
         ctx->initialized = 0;
         ctx->tctx        = tctx;

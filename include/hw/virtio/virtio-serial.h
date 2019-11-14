@@ -61,6 +61,14 @@ typedef struct HostVirtualObjectList {
     struct list_head list;
 } HVOL;
 
+typedef struct HostPageLockObjectList {
+    unsigned long *addr;
+    uint64_t virtual_addr;
+    size_t size;
+    uint32_t blocks;
+    struct list_head list;
+} HPLOL;
+
 typedef struct CudaKernel CudaKernel;
 typedef struct CudaMemVar CudaMemVar;
 typedef struct CUModuleContext CudaModule;
@@ -114,6 +122,7 @@ struct CUDeviceContext
     struct list_head    vol;
     pthread_spinlock_t  vol_lock;
     struct list_head    host_vol;
+    struct list_head    pl_vol;
     ThreadContext   *tctx;
 };
 

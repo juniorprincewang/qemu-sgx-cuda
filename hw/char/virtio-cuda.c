@@ -23,7 +23,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <builtin_types.h> //PATH: /usr/local/cuda/include/builtin_types.h
-// #include <driver_types.h>   // cudaDeviceProp
+// #include <driver_types.h>   // enum cudaDeviceProp, enum cudaFuncCache
 #include <cublas_v2.h>
 #include <curand.h>
 #include "virtio-ioc.h"
@@ -855,6 +855,20 @@ static void cuda_set_device_flags(VirtIOArg *arg, ThreadContext *tctx)
     cudaError(err = cudaSetDeviceFlags(flags));
     if (err == cudaErrorSetOnActiveProcess) 
         err = cudaSuccess;
+    arg->cmd = err;
+    if (err != cudaSuccess) {
+        error("set device flags error.\n");
+    }
+}
+
+static void cuda_device_set_cache_config(VirtIOArg *arg, ThreadContext *tctx)
+{
+    cudaError_t err = -1;
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    func();
+    enum cudaFuncCache cacheConfig = (enum cudaFuncCache)arg->flag;
+    debug("set devices cache config=%d\n", cacheConfig);
+    cudaError(err = cudaDeviceSetCacheConfig(cacheConfig));
     arg->cmd = err;
     if (err != cudaSuccess) {
         error("set device flags error.\n");
@@ -3663,13 +3677,16 @@ static void curand_set_generator_offset(VirtIOArg *arg, ThreadContext *tctx)
     curandStatus_t status = -1;
     curandGenerator_t generator;
     unsigned long long offset;
+    unsigned long long seed;
     func();
     generator   = (curandGenerator_t)arg->src;
     offset      = (unsigned long long)arg->param;
+    seed        = (unsigned long long)arg->param2;
+    curandCheck(status = curandSetPseudoRandomGeneratorSeed(generator, seed));
     curandCheck(status = curandSetGeneratorOffset(generator, offset));
     arg->cmd = status;
-    debug("curand set offset generator 0x%lx, offset 0x%llx\n", 
-        (uint64_t)generator, offset);
+    debug("curand set offset generator 0x%lx, seed 0x%llx offset 0x%llx\n", 
+        (uint64_t)generator, seed, offset);
 }
 
 static void curand_set_pseudorandom_seed(VirtIOArg *arg, ThreadContext *tctx)
@@ -3985,6 +4002,9 @@ static void *worker_processor(void *arg)
                 break;
             case VIRTIO_CUDA_SETDEVICEFLAGS:
                 cuda_set_device_flags(msg, tctx);
+                break;
+            case VIRTIO_CUDA_DEVICESETCACHECONFIG:
+                cuda_device_set_cache_config(msg, tctx);
                 break;
             case VIRTIO_CUDA_DEVICERESET:
                 cuda_device_reset(msg, tctx);

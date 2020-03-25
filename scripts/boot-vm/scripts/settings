@@ -1,0 +1,43 @@
+#Basic Parameter  
+
+virtio="yes"
+cache="yes"
+graphics="no"
+autoballoon="no"
+qmp="yes"
+snapshot="no"
+debug="yes"
+
+DEBUG=debug${debug}
+VIRTIO=virtio${virtio}
+CACHE=cache${cache}
+GRAPHICS=graphics${graphics}
+AUTOBALLOON=autoballoon${autoballoon}
+SNAPSHOT=snapshot${snapshot}
+QMP=qmp${qmp}
+
+# Directories of virtual machine
+QEMU_PATH=/home/max/data/sgx/vm/
+
+# BINARY
+QEMU_BIN=${QEMU_PATH}/build/x86_64-softmmu/qemu-system-x86_64
+
+# OPTIONS  
+
+SMP="-smp 4"
+KVM="-enable-kvm -machine q35,accel=kvm" 
+SGX="-cpu host,kvm=on,+sgx"
+SGX_CONFIG="-machine epc=92M -machine epc-below-4g=auto"
+
+MEM_SIZE=${MEM_SIZE:-8192}
+MEM_OPT="-m ${MEM_SIZE}"
+
+
+IMAGE_FILE=${QEMU_PATH}/ubuntu_caffe.qcow2
+IMAGE="-drive format=qcow2,file=${IMAGE_FILE}${!VIRTIO}${!CACHE}"
+
+VGA="-vga virtio"
+MONITOR="-monitor stdio"
+
+NET="-netdev type=tap,ifname=tap2,script=no,downscript=no,id=net1 \
+        -device virtio-net-pci,netdev=net1 "

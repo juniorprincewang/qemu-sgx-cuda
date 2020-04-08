@@ -17,7 +17,7 @@ SNAPSHOT=snapshot${snapshot}
 QMP=qmp${qmp}
 
 # Directories of virtual machine
-QEMU_PATH=/home/max/data/sgx/vm/
+QEMU_PATH=/home/max/data/vgpu
 
 # BINARY
 QEMU_BIN=${QEMU_PATH}/build/x86_64-softmmu/qemu-system-x86_64
@@ -33,7 +33,7 @@ MEM_SIZE=${MEM_SIZE:-8192}
 MEM_OPT="-m ${MEM_SIZE}"
 
 
-IMAGE_FILE=${QEMU_PATH}/ubuntu_caffe.qcow2
+IMAGE_FILE=${QEMU_PATH}/ubuntu.qcow2
 IMAGE="-drive format=qcow2,file=${IMAGE_FILE}${!VIRTIO}${!CACHE}"
 
 VGA="-vga virtio"

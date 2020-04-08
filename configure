@@ -3902,7 +3902,7 @@ fi
 if test "$cuda" = "yes" ; then
   LIBS="-lcrypto -lcuda -lcudart -lcublas -lcurand -lpthread -lsample_libcrypto $LIBS"
   LDFLAGS="-L/usr/local/cuda/lib64 $LDFLAGS"
-  QEMU_CFLAGS="-I/usr/local/cuda/include -I/home/max/data/gitroom/linux-sgx/linux/installer/bin/sgxsdk/include/ $QEMU_CFLAGS"
+  QEMU_CFLAGS="-I/usr/local/cuda/include -I/opt/intel/sgxsdk/include/ $QEMU_CFLAGS"
 fi
 
 ##########################################

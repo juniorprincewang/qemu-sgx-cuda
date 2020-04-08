@@ -141,9 +141,16 @@ static inline void __cuErrorCheck(cudaError_t err, const int line)
 }
 
 #define execute_with_context(call, context) {\
-    cuError(cuCtxPushCurrent(context));\
+    cuError(cuCtxSetCurrent(context));\
     cudaError( (call) );\
-    cuError(cuCtxPopCurrent(&context));\
+}
+
+    // cuError(cuCtxPushCurrent(context));
+    // cuError(cuCtxPopCurrent(&context));
+
+#define execute_with_cu_context(call, context) {\
+    cuError(cuCtxSetCurrent(context));\
+    cuError( (call) );\
 }
 
 #define HMAC_SHA256_SIZE 32 // hmac-sha256 output size is 32 bytes
@@ -426,7 +433,7 @@ typedef struct binary_buf
     uint32_t size;
     uint32_t nr_var;
     uint32_t nr_func;
-#ifdef VIRTIO_ENC
+#ifdef ENABLE_MAC
     uint8_t payload_tag[SAMPLE_SP_TAG_SIZE];
 #endif
     uint8_t buf[];
@@ -452,11 +459,12 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
 {
     void *shm;
     fatbin_buf_t *fat_bin;
-    int nr, i, j;
+    int nr, j;
     uint32_t offset = 0, page_offset;
     uint32_t buf_size    = arg->srcSize;
     CudaContext *ctx        = &tctx->contexts[DEFAULT_DEVICE];
-#ifdef VIRTIO_ENC
+#ifdef ENABLE_MAC
+    int i;
     sp_aes_gcm_data_t *decrypt_msg;
 #endif
 
@@ -476,7 +484,7 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
     fat_bin = (fatbin_buf_t *)(shm + page_offset);
     debug("fat_bin addr %p\n", fat_bin);
     debug("nr_binary %x\n", fat_bin->nr_binary);
-#ifdef VIRTIO_ENC
+#ifdef ENABLE_MAC
     sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)fat_bin, buf_size, &decrypt_msg);
     debug("payload_tag\n");
     for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
@@ -518,7 +526,124 @@ static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
         cuda_module->fatbin_size         = p_binary->size;
         cuda_module->cudaKernelsCount    = p_binary->nr_func;
         cuda_module->cudaVarsCount       = p_binary->nr_var;
-#ifdef VIRTIO_ENC
+#ifdef ENABLE_ENC
+        cuda_module->fatbin              = malloc(p_binary->size);
+        debug("arg payload_tag\n");
+        for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+            print("%x ", p_binary->payload_tag[i]);
+        }
+        print("\n\n");
+        if(sp_ra_decrypt_req(&tctx->g_sp_db, p_binary->buf, p_binary->size, cuda_module->fatbin, p_binary->payload_tag)) {
+            error("decrypt failed.\n");
+            arg->cmd = cudaErrorUnknown;
+            return;
+        }
+#else
+        cuda_module->fatbin              = p_binary->buf;
+#endif
+        offset += p_binary->size + sizeof(binary_buf_t);
+        cuError(cuModuleLoadData(&cuda_module->module, cuda_module->fatbin));
+        debug("Loading module... #%d, fatbin = 0x%lx, fatbin size=0x%x\n", 
+            nr, cuda_module->handle, cuda_module->fatbin_size);
+        // functions
+        debug("nr_func %x\n", p_binary->nr_func);
+        for(j=0; j<p_binary->nr_func; j++) {
+            function_buf_t *p_func  = (void*)fat_bin->buf + offset;
+            CudaKernel *kernel      = &cuda_module->cudaKernels[j];
+            // kernel->func_name       = p_func->buf;
+            kernel->func_name       = malloc(p_func->size);
+            memcpy(kernel->func_name, p_func->buf, p_func->size);
+            kernel->func_name_size  = p_func->size;
+            kernel->func_id         = p_func->hostFun;
+            offset += p_func->size + sizeof(function_buf_t);
+            cuError(cuModuleGetFunction(&kernel->kernel_func, cuda_module->module, kernel->func_name));
+            debug("func %d, name='%s', name size=0x%x, func_id=0x%lx\n",
+                j, kernel->func_name, kernel->func_name_size, kernel->func_id);
+        }
+        // var
+        debug("nr_var %x\n", p_binary->nr_var);
+        for(j=0; j<p_binary->nr_var; j++) {
+            var_buf_t *p_var    = (void*)fat_bin->buf + offset;
+            CudaMemVar *var     = &cuda_module->cudaVars[j];
+            // var->addr_name      = p_var->buf;
+            var->addr_name_size = p_var->size;
+            var->addr_name = malloc(p_var->size);
+            memcpy(var->addr_name, p_var->buf, p_var->size);
+            var->global         = p_var->global ? 1 : 0;
+            var->host_var       = p_var->hostVar;
+            offset += p_var->size + sizeof(var_buf_t);
+            cuError(cuModuleGetGlobal(&var->device_ptr, &var->mem_size, cuda_module->module, var->addr_name));
+            debug("var %d, name='%s', name size=0x%x, host_var=0x%lx, global =%d\n", 
+                j, var->addr_name, var->addr_name_size, var->host_var, var->global);
+        }
+    }
+    ctx->initialized = 1;
+    ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
+    arg->cmd = cudaSuccess;
+}
+
+static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
+{
+    fatbin_buf_t *fat_bin;
+    VirtIOArg *arg;
+    int nr, j;
+    uint32_t offset = 0;
+    CudaContext *ctx        = &tctx->contexts[DEFAULT_DEVICE];
+#ifdef ENABLE_MAC
+    int i;
+    sp_aes_gcm_data_t *decrypt_msg;
+#endif
+
+    func();
+
+    cuError(cuCtxSetCurrent(ctx->context));
+    arg = elem->out_sg[0].iov_base;
+    fat_bin = (fatbin_buf_t *)(elem->out_sg[1].iov_base);
+    debug("fat_bin addr %p\n", fat_bin);
+    debug("nr_binary %x\n", fat_bin->nr_binary);
+#ifdef ENABLE_MAC
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)fat_bin, arg->srcSize, &decrypt_msg);
+    debug("payload_tag\n");
+    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+        print("%x ", decrypt_msg->payload_tag[i]);
+    }
+    print("\n\n");
+    debug("req tag\n");
+    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+        print("%x ", arg->mac[i]);
+    }
+    print("\n\n");
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
+#endif
+    for(nr=0; nr<fat_bin->nr_binary; nr++) {
+        binary_buf_t *p_binary = (void*)fat_bin->buf + offset;
+        ctx->moduleCount++;
+        if (ctx->moduleCount > CudaModuleMaxNum-1) {
+            error("Fatbinary number is overflow.\n");
+            arg->cmd = cudaErrorUnknown;
+            return;
+        }
+        if(p_binary->nr_func >= CudaFunctionMaxNum) {
+            error("kernel number is overflow.\n");
+            arg->cmd = cudaErrorUnknown;
+            return;
+        }
+        if(p_binary->nr_var >= CudaVariableMaxNum) {
+            error("var number is overflow.\n");
+            arg->cmd = cudaErrorUnknown;
+            return;
+        }
+        CudaModule *cuda_module = &ctx->modules[nr];
+        cuda_module->handle              = (size_t)arg->src;
+        cuda_module->fatbin_size         = p_binary->size;
+        cuda_module->cudaKernelsCount    = p_binary->nr_func;
+        cuda_module->cudaVarsCount       = p_binary->nr_var;
+#ifdef ENABLE_ENC
         cuda_module->fatbin              = malloc(p_binary->size);
         debug("arg payload_tag\n");
         for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
@@ -838,6 +963,9 @@ static void init_primary_context(CudaContext *ctx)
         // cuErrorExit(cuDeviceGet(&ctx->dev, ctx->tctx->cur_dev));
         // cuErrorExit(cuDevicePrimaryCtxRetain(&ctx->context, ctx->dev));
         // cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
+#ifndef PRE_INIT_CTX
+        cuError(cuCtxCreate(&ctx->context, 0, ctx->dev));
+#endif
         cuError(cuCtxSetCurrent(ctx->context));
         ctx->initialized = 1;
         ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
@@ -879,7 +1007,7 @@ static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
 {
     cudaError_t err=0;
     uint32_t para_num=0, para_idx=0;
-    uint32_t para_size=0, conf_size=0;
+    uint32_t para_size=0;
     cudaStream_t stream_kernel = 0;
     int i = 0;
     int j = 0;
@@ -914,20 +1042,14 @@ static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
         return;
     }
     para_size = arg->srcSize;
-    conf_size = arg->dstSize;
     
-    char *para = (char *)gpa_to_hva((hwaddr)(arg->src), para_size);
+    CUkernel_st *para = (CUkernel_st *)gpa_to_hva((hwaddr)(arg->src), para_size);
     if (!para ) {
         arg->cmd = cudaErrorInvalidConfiguration;
         error("Invalid para configure.\n");
         return ;
     }
-    KernelConf_t *conf=(KernelConf_t*)gpa_to_hva((hwaddr)arg->dst, conf_size);
-    if (!conf) {
-        arg->cmd = cudaErrorInvalidConfiguration;
-        error("Invalid kernel configure.\n");
-        return ;
-    }
+
     para_num = virtio_ldl_p(vdev, para);
     debug(" para_num = %u\n", para_num);
     para_buf = malloc(para_num * sizeof(void*));
@@ -945,17 +1067,19 @@ static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
         para_idx += virtio_ldl_p(vdev, &para[para_idx]) + sizeof(uint32_t);
     }
 
-    debug("gridDim=%u %u %u\n", conf->gridDim.x, 
-          conf->gridDim.y, conf->gridDim.z);
-    debug("blockDim=%u %u %u\n", conf->blockDim.x,
-          conf->blockDim.y, conf->blockDim.z);
-    debug("sharedMem=%ld\n", conf->sharedMem);
-    debug("stream=0x%lx\n", (uint64_t)(conf->stream));
+    debug("gridDim=%u %u %u\n", para->grid_x, 
+          para->grid_y, para->grid_z);
+    debug("blockDim=%u %u %u\n", para->block_x,
+          para->block_y, para->block_z);
+    debug("sharedMem=%d\n", para->smem_size);
+    debug("stream=0x%lx\n", (uint64_t)(para->stream));
+    debug("param_nr=0x%x\n", para->param_nr);
+    debug("param_size=0x%x\n", para->param_size);
     
-    if(!((uint64_t)conf->stream)) {
+    if(!((uint64_t)para->stream)) {
         stream_kernel = NULL;
     } else {
-        int pos=(uint64_t)conf->stream;
+        int pos=(uint64_t)para->stream;
         if (__get_bit(&ctx->cudaStreamBitmap, pos-1)) {
             error("No such stream, pos=%d\n", pos);
             arg->cmd=cudaErrorInvalidConfiguration;
@@ -967,9 +1091,9 @@ static void cuda_launch(VirtIOArg *arg, VirtIOSerialPort *port)
 
     cuError(cuCtxPushCurrent(ctx->context));
     cuError(cuLaunchKernel( kernel->kernel_func,
-                            conf->gridDim.x, conf->gridDim.y, conf->gridDim.z,
-                            conf->blockDim.x, conf->blockDim.y, conf->blockDim.z,
-                            conf->sharedMem,
+                            para->grid_x, para->grid_y, para->grid_z,
+                            para->block_x, para->block_y, para->block_z,
+                            para->smem_size,
                             stream_kernel,
                             para_buf, NULL));
     cudaError(err = cudaGetLastError());
@@ -1716,6 +1840,27 @@ static void cuda_malloc(VirtIOArg *arg, ThreadContext *tctx)
     list_add_tail(&vol->list, &ctx->vol);
     debug("actual devPtr=0x%lx, virtual ptr=0x%lx, size=0x%lx,"
           "ret value=0x%x\n", (uint64_t)devPtr, arg->dst, size, err);
+}
+
+static void cu_malloc(VirtQueueElement *elem, ThreadContext *tctx)
+{
+    CUresult err=-1;
+    CUdeviceptr devPtr;
+    size_t size = 0;
+    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
+    func();
+    init_primary_context(ctx);
+    size = arg->srcSize;    
+    execute_with_cu_context(err= cuMemAlloc(&devPtr, size), ctx->context);
+    arg->cmd = err;
+    if (err != CUDA_SUCCESS) {
+        error("Alloc memory error!\n");
+        return;
+    }
+    arg->dst    = (uint64_t)devPtr;
+    debug("devptr = 0x%llx\n", devPtr);
 }
 
 static int set_shm(size_t size, char *file_path)
@@ -3830,6 +3975,278 @@ static ssize_t flush_buf(VirtIOSerialPort *port,
     return 0;
 }
 
+/* 
+*   Callback function that's called when the guest sends us data.  
+ * Guest wrote some data to the port. This data is handed over to
+ * the app via this callback.  The app can return a size less than
+ * 'len'.  In this case, throttling will be enabled for this port.
+ */
+static ssize_t handle_output(VirtIOSerialPort *port,
+                         VirtQueueElement *elem)
+{
+    ThreadContext *tctx = port->thread_context;
+    /*if (len != sizeof(VirtIOArg)) {
+        error("buf len should be %lu, not %ld\n", sizeof(VirtIOArg), len);
+        return 0;
+    }*/
+    VirtIOArg *msg = elem->out_sg[0].iov_base;
+    int len = elem->out_sg[0].iov_len;
+    int port_id = port->id;
+    int tid = port_id;
+    debug("port id = %d\n", port_id);
+    debug("port->id=%d, elem->out_num=%d\n", port->id, elem->out_num);
+    debug("sizeof(VirtIOArg) %ld, len=%d\n", sizeof(VirtIOArg), len);
+    debug("cmd = %d\n", msg->cmd);
+    switch(msg->cmd) {
+        case VIRTIO_CUDA_HELLO:
+            cuda_gpa_to_hva(msg);
+            break;
+        case VIRTIO_CUDA_PRIMARYCONTEXT:
+            primarycontext(elem, tctx);
+            break;
+        case VIRTIO_CUDA_REGISTERFATBINARY:
+            cuda_register_fatbinary(msg, tctx);
+            break;
+        case VIRTIO_CUDA_UNREGISTERFATBINARY:
+            cuda_unregister_fatbinary(msg, tctx);
+            break;
+        case VIRTIO_CUDA_REGISTERFUNCTION:
+            cuda_register_function(msg, tctx);
+            break;
+        case VIRTIO_CUDA_REGISTERVAR:
+            cuda_register_var(msg, tctx);
+            break;
+        case VIRTIO_CUDA_LAUNCH:
+            cuda_launch(msg, port);
+            break;
+        case VIRTIO_CUDA_MALLOC:
+            cu_malloc(elem, tctx);
+            break;
+        case VIRTIO_CUDA_HOSTREGISTER:
+            cuda_host_register(msg, port);
+            break;
+        case VIRTIO_CUDA_HOSTUNREGISTER:
+            cuda_host_unregister(msg, port);
+            break;
+        case VIRTIO_SGX_MEMCPY:
+            cuda_memcpy_safe(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMCPY:
+            cuda_memcpy(msg, tctx);
+            break;
+        case VIRTIO_CUDA_FREE:
+            cuda_free(msg, tctx);
+            break;
+        case VIRTIO_CUDA_GETDEVICE:
+            cuda_get_device(msg, tid);
+            break;
+        case VIRTIO_CUDA_GETDEVICEPROPERTIES:
+            cuda_get_device_properties(msg);
+            break;
+        case VIRTIO_CUDA_MMAPCTL:
+            mmapctl(msg, port);
+            break;
+        case VIRTIO_CUDA_MUNMAPCTL:
+            munmapctl(msg, port);
+            break;
+        case VIRTIO_CUDA_GETDEVICECOUNT:
+            cuda_get_device_count(msg);
+            break;
+        case VIRTIO_CUDA_SETDEVICE:
+            cuda_set_device(msg, tctx);
+            break;
+        case VIRTIO_CUDA_SETDEVICEFLAGS:
+            cuda_set_device_flags(msg, tctx);
+            break;
+        case VIRTIO_CUDA_DEVICESETCACHECONFIG:
+            cuda_device_set_cache_config(msg, tctx);
+            break;
+        case VIRTIO_CUDA_DEVICERESET:
+            cuda_device_reset(msg, tctx);
+            break;
+        case VIRTIO_CUDA_STREAMCREATE:
+            cuda_stream_create(msg, tctx);
+            break;
+        case VIRTIO_CUDA_STREAMCREATEWITHFLAGS:
+            cuda_stream_create_with_flags(msg, tctx);
+            break;
+        case VIRTIO_CUDA_STREAMDESTROY:
+            cuda_stream_destroy(msg, tctx);
+            break;
+        case VIRTIO_CUDA_STREAMWAITEVENT:
+            cuda_stream_wait_event(msg, tctx);
+            break;
+        case VIRTIO_CUDA_STREAMSYNCHRONIZE:
+            cuda_stream_synchronize(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTCREATE:
+            cuda_event_create(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTCREATEWITHFLAGS:
+            cuda_event_create_with_flags(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTDESTROY:
+            cuda_event_destroy(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTRECORD:
+            cuda_event_record(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTQUERY:
+            cuda_event_query(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTSYNCHRONIZE:
+            cuda_event_synchronize(msg, tctx);
+            break;
+        case VIRTIO_CUDA_EVENTELAPSEDTIME:
+            cuda_event_elapsedtime(msg, tctx);
+            break;
+        case VIRTIO_CUDA_THREADSYNCHRONIZE:
+            cuda_thread_synchronize(msg, tctx);
+            break;
+        case VIRTIO_CUDA_GETLASTERROR:
+            cuda_get_last_error(msg, tctx);
+            break;
+        case VIRTIO_CUDA_PEEKATLASTERROR:
+            cuda_peek_at_last_error(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMCPY_ASYNC:
+            cuda_memcpy_async(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMSET:
+            cuda_memset(msg, tctx);
+            break;
+        case VIRTIO_CUDA_DEVICESYNCHRONIZE:
+            cuda_device_synchronize(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMGETINFO:
+            cuda_mem_get_info(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMCPYTOSYMBOL:
+            cuda_memcpy_to_symbol(msg, tctx);
+            break;
+        case VIRTIO_CUDA_MEMCPYFROMSYMBOL:
+            cuda_memcpy_from_symbol(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_CREATE:
+            cublas_create(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DESTROY:
+            cublas_destroy(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SETVECTOR:
+            cublas_set_vector(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_GETVECTOR:
+            cublas_get_vector(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SETMATRIX:
+            cublas_set_matrix(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_GETMATRIX:
+            cublas_get_matrix(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SGEMM:
+            cublas_sgemm(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DGEMM:
+            cublas_dgemm(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SETSTREAM:
+            cublas_set_stream(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_GETSTREAM:
+            cublas_get_stream(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SASUM:
+            cublas_sasum(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DASUM:
+            cublas_dasum(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SAXPY:
+            cublas_saxpy(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DAXPY:
+            cublas_daxpy(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SCOPY:
+            cublas_scopy(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DCOPY:
+            cublas_dcopy(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SGEMV:
+            cublas_sgemv(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DGEMV:
+            cublas_dgemv(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SDOT:
+            cublas_sdot(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DDOT:
+            cublas_ddot(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_SSCAL:
+            cublas_sscal(msg, tctx);
+            break;
+        case VIRTIO_CUBLAS_DSCAL:
+            cublas_dscal(msg, tctx);
+            break;
+        case VIRTIO_CURAND_CREATEGENERATOR:
+            curand_create_generator(msg, tctx);
+            break;
+        case VIRTIO_CURAND_CREATEGENERATORHOST:
+            curand_create_generator_host(msg, tctx);
+            break;
+        case VIRTIO_CURAND_GENERATE:
+            curand_generate(msg, tctx);
+            break;
+        case VIRTIO_CURAND_GENERATENORMAL:
+            curand_generate_normal(msg, tctx);
+            break;
+        case VIRTIO_CURAND_GENERATENORMALDOUBLE:
+            curand_generate_normal_double(msg, tctx);
+            break;
+        case VIRTIO_CURAND_GENERATEUNIFORM:
+            curand_generate_uniform(msg, tctx);
+            break;
+        case VIRTIO_CURAND_GENERATEUNIFORMDOUBLE:
+            curand_generate_uniform_double(msg, tctx);
+            break;
+        case VIRTIO_CURAND_DESTROYGENERATOR:
+            curand_destroy_generator(msg, tctx);
+            break;
+        case VIRTIO_CURAND_SETGENERATOROFFSET:
+            curand_set_generator_offset(msg, tctx);
+            break;
+        case VIRTIO_CURAND_SETPSEUDORANDOMSEED:
+            curand_set_pseudorandom_seed(msg, tctx);
+            break;
+        case VIRTIO_SGX_MSG0:
+            sgx_proc_msg0(msg, tctx);
+            break;
+        case VIRTIO_SGX_MSG1:
+            sgx_proc_msg1(msg, tctx);
+            break;
+        case VIRTIO_SGX_MSG3:
+            sgx_proc_msg3(msg, tctx);
+            break;
+        default:
+            error("[+] header.cmd=%u, nr= %u \n",
+                  msg->cmd, _IOC_NR(msg->cmd));
+        return 0;
+    }
+    msg->cmd = 0;
+    int ret = virtio_serial_write(port, (const uint8_t *)msg, len);
+    if (ret < sizeof(VirtIOArg)) {
+        error("write error.\n");
+        virtio_serial_throttle_port(port, true);
+    }
+    debug("[+] WRITE BACK\n");
+    return 0;
+}
+
 
 static void unload_module(ThreadContext *tctx)
 {
@@ -3852,7 +4269,7 @@ static void unload_module(ThreadContext *tctx)
                 }
                 if (ctx->initialized)
                     cuError(cuModuleUnload(mod->module));
-#ifdef VIRTIO_ENC
+#ifdef ENABLE_ENC
                 free(mod->fatbin);
 #endif
                 memset(mod, 0, sizeof(CudaModule));
@@ -3860,7 +4277,9 @@ static void unload_module(ThreadContext *tctx)
             ctx->moduleCount = 0;
             if(ctx->initialized) {
                 // cuErrorExit(cuDevicePrimaryCtxRelease(ctx->dev));
-                // cuErrorExit(cuCtxDestroy(ctx->context));
+#ifndef PRE_INIT_CTX
+                cuError(cuCtxDestroy(ctx->context));
+#endif
                 deinit_primary_context(ctx);
             }
         }
@@ -4292,8 +4711,10 @@ static void init_port(VirtIOSerialPort *port)
         ctx->initialized = 0;
         ctx->tctx        = tctx;
         cuErrorExit(cuDeviceGet(&ctx->dev, i));
+#ifdef PRE_INIT_CTX
         cuErrorExit(cuCtxCreate(&ctx->context, 0, ctx->dev));
         debug("devID %d, create context %p\n", ctx->dev, ctx->context);
+#endif
     }
     tctx->worker_queue  = chan_init(100);
 }
@@ -4305,12 +4726,14 @@ static void deinit_port(VirtIOSerialPort *port)
     /*delete elements in struct list_head*/
     /*
     */
+#ifdef PRE_INIT_CTX
     for (int i = 0; i < tctx->deviceCount; i++)
     {
         ctx = &tctx->contexts[i];
         cuErrorExit(cuCtxDestroy(ctx->context));
         debug("devID %d, destroy context %p\n", i, ctx->context);
     }
+#endif
     free(tctx->contexts);
     tctx->contexts = NULL;
     chan_dispose(tctx->worker_queue);
@@ -4378,6 +4801,7 @@ static void virtserialport_class_init(ObjectClass *klass, void *data)
     k->realize = virtconsole_realize;
     k->unrealize = virtconsole_unrealize;
     k->have_data = flush_buf;
+    k->handle_data = handle_output;
     k->set_guest_connected = set_guest_connected;
     k->enable_backend = virtconsole_enable_backend;
     k->guest_ready = virtconsole_guest_ready;

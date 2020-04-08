@@ -116,53 +116,48 @@ static void do_flush_queued_data(VirtIOSerialPort *port, VirtQueue *vq,
                                  VirtIODevice *vdev)
 {
     VirtIOSerialPortClass *vsc;
-
+    func();
     assert(port);
     assert(virtio_queue_ready(vq));
 
     vsc = VIRTIO_SERIAL_PORT_GET_CLASS(port);
 
-    while (!port->throttled) {
-        unsigned int i;
-
-        /* Pop an elem only if we haven't left off a previous one mid-way */
+    /* Pop an elem only if we haven't left off a previous one mid-way */
+    if (!port->elem) {
+        port->elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
         if (!port->elem) {
-            port->elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
-            if (!port->elem) {
-                break;
-            }
-            port->iov_idx = 0;
-            port->iov_offset = 0;
+            virtio_notify(vdev, vq);
+            return;
         }
+  /*      port->iov_idx = 0;
+        port->iov_offset = 0;*/
+    }
+    vsc->handle_data(port, port->elem);
+/*    for (i = port->iov_idx; i < port->elem->out_num; i++) {
+        size_t buf_size;
+        ssize_t ret;
 
-        for (i = port->iov_idx; i < port->elem->out_num; i++) {
-            size_t buf_size;
-            ssize_t ret;
-
-            buf_size = port->elem->out_sg[i].iov_len - port->iov_offset;
-            ret = vsc->have_data(port,
-                                  port->elem->out_sg[i].iov_base
-                                  + port->iov_offset,
-                                  buf_size);
-            if (!port->elem) { /* bail if we got disconnected */
-                return;
-            }
-            if (port->throttled) {
-                port->iov_idx = i;
-                if (ret > 0) {
-                    port->iov_offset += ret;
-                }
-                break;
-            }
-            port->iov_offset = 0;
+        buf_size = port->elem->out_sg[i].iov_len - port->iov_offset;
+        ret = vsc->have_data(port,
+                              port->elem->out_sg[i].iov_base
+                              + port->iov_offset,
+                              buf_size);
+        if (!port->elem) { // bail if we got disconnected
+            return;
         }
         if (port->throttled) {
+            port->iov_idx = i;
+            if (ret > 0) {
+                port->iov_offset += ret;
+            }
             break;
         }
-        virtqueue_push(vq, port->elem, 0);
-        g_free(port->elem);
-        port->elem = NULL;
-    }
+        port->iov_offset = 0;
+    }*/
+    virtqueue_push(vq, port->elem, 0);
+    g_free(port->elem);
+    port->elem = NULL;
+    
     virtio_notify(vdev, vq);
 }
 

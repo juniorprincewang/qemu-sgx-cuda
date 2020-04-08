@@ -32,7 +32,7 @@
 #define CudaFunctionMaxNum  (1<<8)
 #define CudaVariableMaxNum  (1<<8)
 
-#define CudaEventMapMax 4
+#define CudaEventMapMax 256
 #define CudaEventMaxNum BITS_PER_WORD * CudaEventMapMax
 #define CudaStreamMaxNum BITS_PER_WORD
 #define VOL_OFFSET 0x1000
@@ -208,6 +208,12 @@ typedef struct VirtIOSerialPortClass {
      */
     ssize_t (*have_data)(VirtIOSerialPort *port, const uint8_t *buf,
                          ssize_t len);
+    /*
+     * Guest wrote some data to the port. This data is handed over to
+     * the app via this callback.  
+     * pass VirtQueueElement
+     */
+    ssize_t (*handle_data)(VirtIOSerialPort *port, VirtQueueElement *elem);
 } VirtIOSerialPortClass;
 
 /*

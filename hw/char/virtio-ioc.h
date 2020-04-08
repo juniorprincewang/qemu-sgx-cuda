@@ -1,13 +1,17 @@
 #ifndef VIRTCR_IOC_H
 #define VIRTCR_IOC_H
 
-// #define VIRTIO_CUDA_DEBUG
+#define VIRTIO_CUDA_DEBUG
 // #define KMALLOC_SHIFT 22 // 4MB
 #define KMALLOC_SHIFT 13
 #define KMALLOC_SIZE (1UL<<KMALLOC_SHIFT)
 #define PAGE_SHIFT 	12
 #define PAGE_SIZE 	(1UL<<PAGE_SHIFT)
-#define VIRTIO_ENC 
+// #define ENABLE_MAC
+// #ifdef ENABLE_MAC
+// 	#define ENABLE_ENC 
+// #endif
+#define PRE_INIT_CTX
 
 
 #ifndef __KERNEL__
@@ -121,17 +125,6 @@
 #endif //KERNEL
 
 
-
-//for crypto_data_header, if these is no openssl header
-#ifndef RSA_PKCS1_PADDING
-
-#define RSA_PKCS1_PADDING	1
-#define RSA_SSLV23_PADDING	2
-#define RSA_NO_PADDING		3
-#define RSA_PKCS1_OAEP_PADDING	4
-
-#endif
-
 /*
  * function arguments
 */
@@ -151,6 +144,22 @@ typedef struct VirtIOArg
 	uint64_t param2;
 	uint8_t mac[16];
 } VirtIOArg;
+
+
+typedef struct CUkernel_st {
+	uint32_t grid_x;
+	uint32_t grid_y;
+	uint32_t grid_z;
+	uint32_t block_x;
+	uint32_t block_y;
+	uint32_t block_z;
+	uint32_t smem_size;
+	void *   stream;
+	uint32_t param_nr;
+	uint32_t param_size;
+	uint8_t  param_buf[];
+} CUkernel_st;
+
 /* see ioctl-number in https://github.com/torvalds/
 	linux/blob/master/Documentation/ioctl/ioctl-number.txt
 */

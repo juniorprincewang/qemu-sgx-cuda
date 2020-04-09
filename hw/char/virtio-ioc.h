@@ -75,6 +75,14 @@
 #define VIRTIO_CUDA_PRIMARYCONTEXT			43
 #define VIRTIO_CUDA_DEVICESETCACHECONFIG 	44
 
+#define VIRTIO_CUDA_MEMCPY_HTOD				50
+#define VIRTIO_CUDA_MEMCPY_DTOH				51
+#define VIRTIO_CUDA_MEMCPY_DTOD				52
+#define VIRTIO_CUDA_MEMCPY_HTOD_ASYNC 		53
+#define VIRTIO_CUDA_MEMCPY_DTOH_ASYNC 		54
+#define VIRTIO_CUDA_MEMCPY_DTOD_ASYNC 		55
+#define VIRTIO_CUDA_LAUNCH_KERNEL 			56
+
 #define VIRTIO_CUDA_MMAPCTL 				10
 #define VIRTIO_CUDA_MUNMAPCTL 				11
 //sgx----------------------------------
@@ -154,7 +162,7 @@ typedef struct CUkernel_st {
 	uint32_t block_y;
 	uint32_t block_z;
 	uint32_t smem_size;
-	void *   stream;
+	CUstream stream;
 	uint32_t param_nr;
 	uint32_t param_size;
 	uint8_t  param_buf[];

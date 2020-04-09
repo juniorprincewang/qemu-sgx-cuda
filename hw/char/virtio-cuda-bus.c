@@ -940,9 +940,9 @@ static void virtio_cuda_device_realize(DeviceState *dev, Error **errp)
     write(pfd[1], &cmd, 4);
     wait(NULL);
     /* Add a queue for host to guest transfers for port 0 (backward compat) */
-    vser->ivqs[0] = virtio_add_queue(vdev, 128, handle_input);
+    vser->ivqs[0] = virtio_add_queue(vdev, VIRTQUEUE_MAX_SIZE/2, handle_input);
     /* Add a queue for guest to host transfers for port 0 (backward compat) */
-    vser->ovqs[0] = virtio_add_queue(vdev, 128, handle_output);
+    vser->ovqs[0] = virtio_add_queue(vdev, VIRTQUEUE_MAX_SIZE/2, handle_output);
 
     /* TODO: host to guest notifications can get dropped
      * if the queue fills up. Implement queueing in host,
@@ -957,9 +957,9 @@ static void virtio_cuda_device_realize(DeviceState *dev, Error **errp)
 
     for (i = 1; i < vser->bus.max_nr_ports; i++) {
         /* Add a per-port queue for host to guest transfers */
-        vser->ivqs[i] = virtio_add_queue(vdev, 128, handle_input);
+        vser->ivqs[i] = virtio_add_queue(vdev, VIRTQUEUE_MAX_SIZE/2, handle_input);
         /* Add a per-per queue for guest to host transfers */
-        vser->ovqs[i] = virtio_add_queue(vdev, 128, handle_output);
+        vser->ovqs[i] = virtio_add_queue(vdev, VIRTQUEUE_MAX_SIZE/2, handle_output);
     }
 
     vser->ports_map = g_malloc0((DIV_ROUND_UP(vser->serial.max_virtserial_ports, 32))

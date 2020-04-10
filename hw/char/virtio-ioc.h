@@ -1,7 +1,7 @@
 #ifndef VIRTCR_IOC_H
 #define VIRTCR_IOC_H
 
-#define VIRTIO_CUDA_DEBUG
+// #define VIRTIO_CUDA_DEBUG
 // #define KMALLOC_SHIFT 22 // 4MB
 #define KMALLOC_SHIFT 13
 #define KMALLOC_SIZE (1UL<<KMALLOC_SHIFT)
@@ -150,6 +150,7 @@ typedef struct VirtIOArg
 	uint64_t param;
 	uint32_t paramSize;
 	uint64_t param2;
+	uint32_t nr_elem;
 	uint8_t mac[16];
 } VirtIOArg;
 

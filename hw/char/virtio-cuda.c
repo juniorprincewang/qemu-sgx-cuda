@@ -932,6 +932,36 @@ static void cuda_set_device(VirtIOArg *arg, ThreadContext *tctx)
     */
 }
 
+static void cu_set_device(VirtQueueElement *elem, ThreadContext *tctx)
+{
+    CudaContext *ctx = NULL;
+    cudaError_t err = -1;
+    VirtIOArg *arg = NULL;
+    arg = elem->out_sg[0].iov_base;
+
+    func();
+    int dev_id = (int)(arg->flag);
+    debug("set devices=%d\n", dev_id);
+    if (dev_id < 0 || dev_id > tctx->deviceCount-1) {
+        error("setting error device = %d\n", dev_id);
+        arg->cmd = cudaErrorInvalidDevice;
+        return ;
+    }
+    if (! (tctx->deviceBitmap & 1<<dev_id)) {
+        tctx->cur_dev = dev_id;
+        ctx = &tctx->contexts[dev_id];
+        memcpy(ctx->modules, &tctx->contexts[DEFAULT_DEVICE].modules,
+                sizeof(ctx->modules));
+        cuError(cuDeviceGet(&ctx->dev, dev_id));
+        // init_device_module(ctx);
+    }
+    cudaError(err = cudaSetDevice(dev_id));
+    arg->cmd = err;
+    /* clear kernel function addr in parent process,
+    because cudaSetDevice will clear all resources related with host thread.
+    */
+}
+
 static void init_device_module(CudaContext *ctx)
 {
     int i=0, j=0;
@@ -1619,20 +1649,27 @@ static void cu_memcpy_dtoh(VirtQueueElement *elem, ThreadContext *tctx)
 
 static void cu_memcpy_dtod(VirtQueueElement *elem, ThreadContext *tctx)
 {
-/*    cudaError_t err;
-    uint32_t size;
-    void *src, *dst, *addr;
+    CUresult err=0;
+    CUdeviceptr src, dst;
+    size_t size;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     VirtIOArg *arg = NULL;
     arg = elem->out_sg[0].iov_base;
-
     func();
     init_primary_context(ctx);
     debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, param=0x%lx, param2=0x%lx\n",
+          "dstSize=0x%x, kind=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->param, arg->param2);
-    size = arg->srcSize;*/
+          arg->dstSize, arg->flag);
+    src = (CUdeviceptr)arg->src;
+    dst = (CUdeviceptr)arg->dst;
+    size = arg->srcSize;
+    cuError(cuCtxSetCurrent(ctx->context));
+    cuError((err=cuMemcpyDtoD(dst, src, size)));
+    if(err != CUDA_SUCCESS) {
+        error("Failed to memcpy htod\n");
+    }
+    arg->cmd = err;
 }
 
 static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
@@ -1940,6 +1977,60 @@ static void cuda_memcpy_to_symbol(VirtIOArg *arg, ThreadContext *tctx)
     }
 }
 
+static void cu_memcpy_to_symbol(VirtQueueElement *elem, ThreadContext *tctx)
+{
+    CUresult err=0;
+    size_t size;
+    void *src;
+    CUdeviceptr dst;
+    size_t var_handle=0;
+    size_t var_offset=0;
+    int found       = 0;
+    int i           = 0;
+    int j           = 0;
+    int var_count   = 0;
+    int m_num       = 0;
+    CudaMemVar      *var;
+    CudaModule      *cuda_module;
+    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+    
+    func();
+    init_primary_context(ctx);
+    debug("src=0x%lx, srcSize=0x%x, dst=0x%lx, dstSize=0x%x, kind=%lu, "
+        "param=0x%lx, param2=0x%lx \n",
+        arg->src, arg->srcSize, arg->dst, arg->dstSize, arg->flag, 
+        arg->param, arg->param2);
+    var_handle = (size_t)arg->dst;
+    m_num = ctx->moduleCount;
+    for (i=0; i < m_num; i++) {
+        cuda_module = &ctx->modules[i];
+        var_count = cuda_module->cudaVarsCount;
+        for (j=0; j < var_count; j++) {
+            var = &cuda_module->cudaVars[j];
+            if (var->host_var == var_handle) {
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (found == 0) {
+        error("Failed to find such var handle 0x%lx\n", var_handle);
+        arg->cmd = cudaErrorNoKernelImageForDevice;
+        return;
+    }
+
+    size = arg->srcSize;
+    src = elem->out_sg[1].iov_base;
+    var_offset = (size_t)arg->param;
+    dst = (CUdeviceptr)(var->device_ptr+var_offset);
+    execute_with_cu_context(err=cuMemcpyHtoD(dst, src, size), ctx->context);
+    arg->cmd = err;
+    if(err != CUDA_SUCCESS) {
+        error("memcpy to symbol HtoD error!\n");
+    }
+}
+
 static void cuda_memcpy_from_symbol(VirtIOArg *arg, ThreadContext *tctx)
 {
     cudaError_t err=-1;
@@ -2000,6 +2091,60 @@ static void cuda_memcpy_from_symbol(VirtIOArg *arg, ThreadContext *tctx)
     execute_with_context(err = cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost), ctx->context);
     arg->cmd = err;
     if (err != cudaSuccess) {
+        error("memcpy from symbol DtoH error!\n");
+    }
+}
+
+static void cu_memcpy_from_symbol(VirtQueueElement *elem, ThreadContext *tctx)
+{
+    CUresult err=-1;
+    size_t  size;
+    void    *dst;
+    CUdeviceptr src;
+    size_t  var_handle=0;
+    size_t  var_offset=0;
+    int found       = 0;
+    int i           = 0;
+    int j           = 0;
+    int var_count   = 0;
+    int m_num       = 0;
+    CudaMemVar      *var;
+    CudaModule      *cuda_module;
+    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
+    func();
+    init_primary_context(ctx);
+    debug(  "src=0x%lx, srcSize=0x%x, dst=0x%lx, dstSize=0x%x, kind=0x%lx, "
+            "param=0x%lx, param2=0x%lx,\n",
+            arg->src, arg->srcSize, arg->dst, arg->dstSize, arg->flag, 
+            arg->param, arg->param2);
+ 
+    var_handle = (size_t)arg->src;
+    m_num = ctx->moduleCount;
+    for (i=0; i < m_num; i++) {
+        cuda_module = &ctx->modules[i];
+        var_count = cuda_module->cudaVarsCount;
+        for (j=0; j < var_count; j++) {
+            var = &cuda_module->cudaVars[j];
+            if (var->host_var == var_handle) {
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (found == 0) {
+        error("Failed to find such var handle 0x%lx\n", var_handle);
+        arg->cmd = cudaErrorNoKernelImageForDevice;
+        return;
+    }
+    size = arg->dstSize;
+    var_offset = (size_t)arg->param;
+    src = (CUdeviceptr)(var->device_ptr+var_offset);
+    dst = elem->in_sg[0].iov_base;
+    execute_with_cu_context(err = cuMemcpyDtoH(dst, src, size), ctx->context);
+    arg->cmd = err;
+    if (err != CUDA_SUCCESS) {
         error("memcpy from symbol DtoH error!\n");
     }
 }
@@ -4324,7 +4469,7 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             cuda_get_device_count(msg);
             break;
         case VIRTIO_CUDA_SETDEVICE:
-            cuda_set_device(msg, tctx);
+            cu_set_device(elem, tctx);
             break;
         case VIRTIO_CUDA_SETDEVICEFLAGS:
             cuda_set_device_flags(msg, tctx);
@@ -4393,10 +4538,10 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             cuda_mem_get_info(msg, tctx);
             break;
         case VIRTIO_CUDA_MEMCPYTOSYMBOL:
-            cuda_memcpy_to_symbol(msg, tctx);
+            cu_memcpy_to_symbol(elem, tctx);
             break;
         case VIRTIO_CUDA_MEMCPYFROMSYMBOL:
-            cuda_memcpy_from_symbol(msg, tctx);
+            cu_memcpy_from_symbol(elem, tctx);
             break;
         case VIRTIO_CUBLAS_CREATE:
             cublas_create(msg, tctx);

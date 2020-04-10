@@ -11,7 +11,8 @@
 // #ifdef ENABLE_MAC
 // 	#define ENABLE_ENC 
 // #endif
-#define PRE_INIT_CTX
+
+// #define PRE_INIT_CTX
 
 
 #ifndef __KERNEL__
@@ -151,6 +152,9 @@ typedef struct VirtIOArg
 	uint32_t paramSize;
 	uint64_t param2;
 	uint32_t nr_elem;
+	uint64_t stream;
+	uint64_t event;
+	uint64_t event2;
 	uint8_t mac[16];
 } VirtIOArg;
 

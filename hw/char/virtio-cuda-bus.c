@@ -129,36 +129,35 @@ static void do_flush_queued_data(VirtIOSerialPort *port, VirtQueue *vq,
             virtio_notify(vdev, vq);
             return;
         }
-  /*      port->iov_idx = 0;
-        port->iov_offset = 0;*/
     }
     vsc->handle_data(port, port->elem);
-/*    for (i = port->iov_idx; i < port->elem->out_num; i++) {
-        size_t buf_size;
-        ssize_t ret;
-
-        buf_size = port->elem->out_sg[i].iov_len - port->iov_offset;
-        ret = vsc->have_data(port,
-                              port->elem->out_sg[i].iov_base
-                              + port->iov_offset,
-                              buf_size);
-        if (!port->elem) { // bail if we got disconnected
-            return;
-        }
-        if (port->throttled) {
-            port->iov_idx = i;
-            if (ret > 0) {
-                port->iov_offset += ret;
-            }
-            break;
-        }
-        port->iov_offset = 0;
-    }*/
     virtqueue_push(vq, port->elem, 0);
     g_free(port->elem);
     port->elem = NULL;
-    
     virtio_notify(vdev, vq);
+
+    VirtQueue *ivq = port->ivq;
+    if (!virtio_queue_ready(ivq)) {
+        // printf("virtio_queue no ready\n");
+        return;
+    }
+
+    port->elem = virtqueue_pop(ivq, sizeof(VirtQueueElement));
+    if (!port->elem) {
+        // printf("!elem\n");
+        virtio_notify(vdev, ivq);
+        return;
+    }
+    int a= 16;
+    // printf("in_num %d\n", port->elem->in_num);
+    size_t len = iov_from_buf(port->elem->in_sg, port->elem->in_num, 0, &a, sizeof(int));
+                           // port->elem->out_sg[0].iov_base, 
+                           // port->elem->out_sg[0].iov_len);
+    // printf("send back %ld\n", len);
+    virtqueue_push(ivq, port->elem, len);
+    g_free(port->elem);
+    port->elem = NULL;
+    virtio_notify(vdev, ivq);
 }
 
 

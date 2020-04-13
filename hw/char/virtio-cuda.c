@@ -2096,10 +2096,11 @@ static void cuda_device_reset(VirtQueueElement *elem, ThreadContext *tctx)
     VirtIOArg *arg = elem->out_sg[0].iov_base;
     func();
     cuError(cuDeviceGet(&ctx->dev, tctx->cur_dev));
-    cuError(cuCtxDestroy(ctx->context));
+    if(ctx->initialized)
+        cuError(cuCtxDestroy(ctx->context));
     deinit_primary_context(ctx);
     tctx->deviceBitmap &= ~(1 << tctx->cur_dev);
-    arg->cmd = cudaSuccess;
+    arg->cmd = 0;
     debug("reset devices\n");
 }
 
@@ -2330,11 +2331,13 @@ static void cu_event_elapsedtime(VirtQueueElement *elem, ThreadContext *tctx)
 
 static void cuda_device_synchronize(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    cudaError_t err = -1;
+    cudaError_t err = 0;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     VirtIOArg *arg = elem->out_sg[0].iov_base;
     func();
-    execute_with_context(err = cudaDeviceSynchronize(), ctx->context);
+    // execute_with_context(err = cudaDeviceSynchronize(), ctx->context);
+    if (ctx->initialized)
+        execute_with_cu_context(err = cuCtxSynchronize(), ctx->context);
     arg->cmd = err;
 }
 
@@ -3702,7 +3705,7 @@ static ssize_t handle_output(VirtIOSerialPort *port,
     VirtIOArg *msg = elem->out_sg[0].iov_base;
     debug("port id = %d\n", port->id);
     debug("elem->out_num=%d, in_num=%d\n",elem->out_num, elem->in_num);
-    debug("sizeof(VirtIOArg) %ld, len=%d\n", 
+    debug("sizeof(VirtIOArg) %ld, len=%ld\n", 
             sizeof(VirtIOArg), elem->out_sg[0].iov_len);
     debug("cmd = %d\n", msg->cmd);
     switch(msg->cmd) {

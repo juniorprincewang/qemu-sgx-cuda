@@ -731,7 +731,7 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
 
     para_num = para->param_nr;
     para_buf = malloc(para_num * sizeof(void*));
-    offset_buf = (uint32_t *)elem->out_sg[2].iov_base;
+    offset_buf = (uint32_t *)(para->param_buf+para->param_size);
     for(i=0; i<para_num; i++) {
         para_buf[i] = para->param_buf+offset_buf[i];
         debug("arg %d = %p, offset %x\n", i, para_buf[i], offset_buf[i]);
@@ -746,6 +746,7 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
                             para_buf, NULL));
     cudaError(err = cudaGetLastError());
     arg->cmd = err;
+    free(para_buf);
 }
 
 
@@ -942,183 +943,7 @@ static void cuda_memcpy_safe(VirtIOArg *arg, ThreadContext *tctx)
 
 static void cuda_memcpy(VirtIOArg *arg, ThreadContext *tctx)
 {
-    cudaError_t err;
-    uint32_t size;
-    void *src, *dst, *addr;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-
-    func();
-    init_primary_context(ctx);
-    debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, param=0x%lx, param2=0x%lx\n",
-          arg->tid,  arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->param, arg->param2);
-    size = arg->srcSize;
-    if (arg->flag == cudaMemcpyHostToDevice) {
-        // device address
-        if( (dst = (void*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        // host address from guest space
-        if(arg->param) {
-            if( (src = (void*)map_host_addr_by_vaddr(arg->src, &ctx->host_vol))==NULL) {
-                error("Failed to find virtual addr %p in host vol\n", (void *)arg->src);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        } else {
-            if (size >= KMALLOC_SIZE) {
-                uint32_t rsize = size;
-                int blocks = arg->paramSize;
-                hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
-                if(!gpa_array) {
-                    error("Failed to get gpa_array.\n");
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                uint32_t page_offset = arg->src & (BIT(PAGE_SHIFT) - 1);
-                debug("page_offset %x\n", page_offset);
-                if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                    error("No such physical address 0x%lx.\n", gpa_array[0]);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                addr = addr + page_offset;
-                uint32_t len = min(rsize, PAGE_SIZE - page_offset);
-                execute_with_context( (err= cudaMemcpy(dst, addr, len, cudaMemcpyHostToDevice)), ctx->context);
-                if(err != cudaSuccess) {
-                    error("memcpy cudaMemcpyHostToDevice error!\n");
-                    arg->cmd = err;
-                    return;
-                }
-                dst     += len;
-                rsize   -= len;
-                for(int i=1; i<blocks; i++) {
-                    addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                    len = min(rsize, PAGE_SIZE);
-                    execute_with_context( (err= cudaMemcpy(dst, addr, len, cudaMemcpyHostToDevice)), ctx->context);
-                    if(err != cudaSuccess) {
-                        error("memcpy cudaMemcpyHostToDevice error!\n");
-                        arg->cmd = err;
-                        return;
-                    }
-                    dst     += len;
-                    rsize   -= len;
-                }
-                arg->cmd = err;
-                return;
-            } else {
-                if((src= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                    error("No such physical address 0x%lx.\n", arg->param2);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-            }
-        }
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err= cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice)), ctx->context);
-        arg->cmd = err;
-        if(err != cudaSuccess) {
-            error("memcpy cudaMemcpyHostToDevice error!\n");
-        }
-        return;
-    } else if (arg->flag == cudaMemcpyDeviceToHost) {
-        // get device address
-        if( (src = (void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==0) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        // get host address from guest space
-        if(arg->param) {
-            if( (dst = (void*)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==0) {
-                error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        } else {
-            if (size >= KMALLOC_SIZE) {
-                uint32_t rsize = size;
-                int blocks = arg->paramSize;
-                hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)arg->param2, blocks*sizeof(unsigned long));
-                if(!gpa_array) {
-                    error("Failed to get gpa_array.\n");
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                uint32_t page_offset = arg->dst & (BIT(PAGE_SHIFT) - 1);
-                debug("page_offset %x\n", page_offset);
-                if((addr = gpa_to_hva(gpa_array[0], PAGE_SIZE))==NULL) {
-                    error("No such physical address 0x%lx.\n", gpa_array[0]);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-                addr = addr + page_offset;
-                uint32_t len = min(rsize, PAGE_SIZE - page_offset);
-                execute_with_context( (err= cudaMemcpy(addr, src, len, cudaMemcpyDeviceToHost)), ctx->context);
-                if(err != cudaSuccess) {
-                    error("memcpy cudaMemcpyHostToDevice error!\n");
-                    arg->cmd = err;
-                    return;
-                }
-                src     += len;
-                rsize   -= len;
-                for(int i=1; i<blocks; i++) {
-                    addr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-                    len = min(rsize, PAGE_SIZE);
-                    execute_with_context( (err= cudaMemcpy(addr, src, len, cudaMemcpyDeviceToHost)), ctx->context);
-                    if(err != cudaSuccess) {
-                        error("memcpy cudaMemcpyHostToDevice error!\n");
-                        arg->cmd = err;
-                        return;
-                    }
-                    src     += len;
-                    rsize   -= len;
-                }
-                arg->cmd = err;
-                return;
-            } else {
-                if((dst= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                    error("No such physical address 0x%lx.\n", arg->param2);
-                    arg->cmd = cudaErrorInvalidValue;
-                    return;
-                }
-            }
-        }
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err=cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost)), ctx->context);
-        arg->cmd = err;
-        if (cudaSuccess != err) {
-            error("memcpy cudaMemcpyDeviceToHost error!\n");
-            return;
-        }
-        return;
-    } else if (arg->flag == cudaMemcpyDeviceToDevice) {
-        if( (src = (void *)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-            error("Failed to find src virtual address %p in vol\n",
-                  (void *)arg->src);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        if((dst=(void *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find dst virtual address %p in vol\n",
-                  (void *)arg->dst);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err=cudaMemcpy(dst, src, size, cudaMemcpyDeviceToDevice)), ctx->context );
-        arg->cmd = err;
-        if (cudaSuccess != err) {
-            error("memcpy cudaMemcpyDeviceToDevice error!\n");
-        }
-        return;
-    } else {
-        error("Error memcpy direction\n");
-        arg->cmd = cudaErrorInvalidMemcpyDirection;
-    }
+    return;
 }
 
 static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
@@ -1173,7 +998,6 @@ static void cu_memcpy_dtoh(VirtQueueElement *elem, ThreadContext *tctx)
           "dstSize=0x%x, kind=0x%lx, block_nr=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
           arg->dstSize, arg->flag, arg->param);
-    size = arg->srcSize;
     dev = arg->src;
     cuError(cuCtxSetCurrent(ctx->context));
     for(i=0; i<elem->in_num; i++) {
@@ -1181,7 +1005,7 @@ static void cu_memcpy_dtoh(VirtQueueElement *elem, ThreadContext *tctx)
         va = elem->in_sg[i].iov_base;
         cuError((err=cuMemcpyDtoH(va, dev+offset, size)));
         if(err != CUDA_SUCCESS) {
-            error("Failed to memcpy htod\n");
+            error("Failed to memcpy dtoh\n");
             break;
         }
         offset += size;
@@ -1209,7 +1033,7 @@ static void cu_memcpy_dtod(VirtQueueElement *elem, ThreadContext *tctx)
     cuError(cuCtxSetCurrent(ctx->context));
     cuError((err=cuMemcpyDtoD(dst, src, size)));
     if(err != CUDA_SUCCESS) {
-        error("Failed to memcpy htod\n");
+        error("Failed to memcpy dtod\n");
     }
     arg->cmd = err;
 }
@@ -1240,7 +1064,7 @@ static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
         va = elem->out_sg[i].iov_base;
         cuError((err=cuMemcpyHtoDAsync(dev+offset, va, size, stream)));
         if(err != CUDA_SUCCESS) {
-            error("Failed to memcpy htod\n");
+            error("Failed to memcpy htod async\n");
             break;
         }
         offset += size;
@@ -1274,7 +1098,7 @@ static void cu_memcpy_dtoh_async(VirtQueueElement *elem, ThreadContext *tctx)
         // debug("in_sg len 0x%lx, data %p\n", size, va);
         cuError((err=cuMemcpyDtoHAsync(va, dev+offset, size, stream)));
         if(err != CUDA_SUCCESS) {
-            error("Failed to memcpy htod\n");
+            error("Failed to memcpy dtoh async\n");
             break;
         }
         offset += size;
@@ -1303,7 +1127,7 @@ static void cu_memcpy_dtod_async(VirtQueueElement *elem, ThreadContext *tctx)
     cuError(cuCtxSetCurrent(ctx->context));
     cuError((err=cuMemcpyDtoDAsync(dst, src, size, stream)));
     if(err != CUDA_SUCCESS) {
-        error("Failed to memcpy htod\n");
+        error("Failed to memcpy dtod async\n");
     }
     arg->cmd = err;
 }
@@ -1777,34 +1601,6 @@ static void cu_memset(VirtQueueElement *elem, ThreadContext *tctx)
         error("memset memory error!\n");
 }
 
-static void cuda_malloc(VirtIOArg *arg, ThreadContext *tctx)
-{
-    cudaError_t err=-1;
-    void *devPtr=NULL;
-    size_t size = 0;
-    VOL *vol = NULL;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-
-    func();
-    init_primary_context(ctx);
-    size = arg->srcSize;    
-    execute_with_context(err= cudaMalloc((void **)&devPtr, size), ctx->context);
-    arg->cmd = err;
-    if (err != cudaSuccess) {
-        error("Alloc memory error!\n");
-        return;
-    }
-
-    vol = (VOL *)malloc(sizeof(VOL));
-    vol->addr   = (uint64_t)devPtr;
-    vol->v_addr = (uint64_t)(devPtr + VOL_OFFSET);
-    arg->dst    = (uint64_t)(vol->v_addr);
-    vol->size   = size;
-    list_add_tail(&vol->list, &ctx->vol);
-    debug("actual devPtr=0x%lx, virtual ptr=0x%lx, size=0x%lx,"
-          "ret value=0x%x\n", (uint64_t)devPtr, arg->dst, size, err);
-}
-
 static void cu_malloc(VirtQueueElement *elem, ThreadContext *tctx)
 {
     CUresult err=-1;
@@ -1842,131 +1638,6 @@ static int set_shm(size_t size, char *file_path)
         return 0;
     }
     return mmap_fd;
-}
-
-static void mmapctl(VirtIOArg *arg, VirtIOSerialPort *port)
-{
-    size_t size;
-    void *dst;
-    void *addr = NULL;
-    char path[128];
-    int fd = 0;
-    ThreadContext *tctx = port->thread_context;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-
-    func();
-    debug("src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, param=0x%lx\n",
-          arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->param);
-
-    size = arg->srcSize;
-    snprintf(path, sizeof(path), "/qemu_%lu_%u_%lx", 
-            (long)getpid(), port->id, arg->src);
-    fd = set_shm(size, path);
-    if(!fd)
-        return;
-    if(arg->param) {
-        int blocks = arg->param;
-        uint64_t *gpa_array = (uint64_t*)gpa_to_hva((hwaddr)arg->dst, blocks);
-        if(!gpa_array) {
-            error("Failed to get gpa_array.\n");
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        
-        uint32_t offset = arg->dstSize;
-        uint32_t start_offset = offset % KMALLOC_SIZE;
-        int len = min(size, KMALLOC_SIZE - start_offset);
-        void *tmp = gpa_to_hva((hwaddr)gpa_array[0], len);
-        munmap(tmp, len);
-        addr = mmap(tmp, len, PROT_READ | PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, 0);
-        assert(addr != MAP_FAILED);
-        debug("addr1 %p is mapped to %p\n", tmp, addr);
-        int rsize=size;
-        rsize-=len;
-        offset=len;
-        int i=1;
-        while(rsize) {
-            len=min(rsize, KMALLOC_SIZE);
-            tmp = gpa_to_hva((hwaddr)gpa_array[i++], len);
-            munmap(tmp, len);
-            addr = mmap(tmp, len, PROT_READ | PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, offset);
-            assert(addr != MAP_FAILED);
-            debug("addr%d %p is mapped to %p\n", i, tmp, addr);
-            offset+=len;
-            rsize-=len;
-        }
-        debug("i=%d, KMALLOC_SIZE=0x%lx, blocks=%d\n", i, KMALLOC_SIZE, blocks);
-        assert(i == blocks);
-        dst = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-
-    } else {
-        addr = gpa_to_hva((hwaddr)arg->dst, size);
-        munmap(addr, size);
-        dst = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, 0);
-        assert(dst != MAP_FAILED);
-        debug("addr %p is mapped to %p\n", addr, dst);
-        dst = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    }
-    debug("0x%lx is mapped to %p\n", arg->src, dst);
-    HVOL *hvol  = (HVOL *)malloc(sizeof(HVOL));
-    hvol->addr  = (uint64_t)dst;
-    hvol->virtual_addr  = arg->src;
-    hvol->size  = size;
-    hvol->fd    = fd;
-    list_add_tail(&hvol->list, &ctx->host_vol);
-}
-
-static void munmapctl(VirtIOArg *arg, VirtIOSerialPort *port)
-{
-    size_t size;
-    void *dst;
-    ThreadContext *tctx = port->thread_context;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-
-    func();
-    debug("src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, param=0x%lx\n",
-          arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->param);
-
-    size = arg->srcSize;    
-    if(arg->param) {
-        int blocks = arg->param;
-        uint64_t *gpa_array = (uint64_t*)gpa_to_hva((hwaddr)arg->dst, blocks);
-        if(!gpa_array) {
-            error("Failed to get gpa_array.\n");
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        
-        uint32_t offset = arg->dstSize;
-        uint32_t start_offset = offset % KMALLOC_SIZE;
-        int len = min(size, KMALLOC_SIZE - start_offset);
-        dst = gpa_to_hva((hwaddr)gpa_array[0], len);
-        munmap(dst, len);
-        mmap(dst, len, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0);
-        int rsize=size;
-        rsize-=len;
-        offset=len;
-        int i=1;
-        while(rsize) {
-            len=min(rsize, KMALLOC_SIZE);
-            dst = gpa_to_hva((hwaddr)gpa_array[i++], len);
-            munmap(dst, len);
-            mmap(dst, len, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0);
-            offset+=len;
-            rsize-=len;
-        }
-        assert(i == blocks);
-    } else {
-        dst = gpa_to_hva((hwaddr)arg->dst, size);
-        munmap(dst, size);
-        mmap(dst, size, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0);
-    }
-    remove_hvol_by_vaddr(arg->src, &ctx->host_vol);
-    debug("Finish munmap!\n");
 }
 
 static void cu_host_register(VirtQueueElement *elem, ThreadContext *tctx)
@@ -3774,12 +3445,6 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             break;
         case VIRTIO_CUDA_GETDEVICEPROPERTIES:
             cuda_get_device_properties(msg);
-            break;
-        case VIRTIO_CUDA_MMAPCTL:
-            mmapctl(msg, port);
-            break;
-        case VIRTIO_CUDA_MUNMAPCTL:
-            munmapctl(msg, port);
             break;
         case VIRTIO_CUDA_GETDEVICECOUNT:
             cuda_get_device_count(msg);

@@ -348,46 +348,6 @@ static int cmp_mac(uint8_t *a, uint8_t *b, int n) {
     return 0;
 }
 
-
-static void* map_host_phys(unsigned long paddr_arry, size_t blocks, size_t size)
-{
-    void* shm;
-    void *addr  = NULL;
-    void *ptr   = NULL;
-    int i=0;
-    size_t offset=0;
-    char path[256];
-    int fd;
-
-    func();
-    if(blocks <= 0 || size <= 0 || paddr_arry == 0)
-        return NULL;
-    hwaddr *gpa_array = (hwaddr*)gpa_to_hva((hwaddr)paddr_arry, blocks*sizeof(unsigned long));
-    if(!gpa_array) {
-        error("Failed to get gpa_array.\n");
-        return NULL;
-    }
-    snprintf(path, sizeof(path), "/qemu_%lu_primarycontext_%p", 
-            (long)getpid(), gpa_array);
-    fd = set_shm(blocks*PAGE_SIZE, path);
-    if(!fd)
-        return NULL;
-    shm = mmap(0, blocks*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    for(i=0; i<blocks; i++) {
-        ptr = gpa_to_hva(gpa_array[i], PAGE_SIZE);
-        memcpy((void*)(shm+offset), ptr, PAGE_SIZE);
-        munmap(ptr, PAGE_SIZE);
-        addr = mmap(ptr, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, offset);
-        if(addr == MAP_FAILED) {
-            error("Failed to mmap paddr%d 0x%lx is mapped to %p.\n", i, gpa_array[i], (void*)(shm+offset));
-            return NULL;
-        }
-        offset+=PAGE_SIZE;
-        debug("paddr%d 0x%lx is mapped to %p\n", i, gpa_array[i], (void*)(shm+offset));
-    }
-    return shm;
-}
-
 typedef struct fatbin_buf
 {
     uint32_t block_size;
@@ -423,10 +383,6 @@ typedef struct var_buf
     uint32_t size;
     uint8_t buf[];
 } var_buf_t;
-
-static void cuda_primarycontext(VirtIOArg *arg, ThreadContext *tctx)
-{
-}
 
 static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
 {
@@ -713,7 +669,7 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
         arg->cmd = cudaErrorInvalidDeviceFunction;
         return;
     }
-    
+
     CUkernel_st *para = (CUkernel_st *)elem->out_sg[1].iov_base;
     if (!para ) {
         arg->cmd = cudaErrorInvalidConfiguration;
@@ -1652,9 +1608,9 @@ static void cu_host_register(VirtQueueElement *elem, ThreadContext *tctx)
 
     func();
     debug("src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, elem nr=0x%x\n",
+          "dstSize=0x%x, kind=0x%lx, elem nr=0x%lx\n",
           arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->nr_elem);
+          arg->dstSize, arg->flag, arg->param);
     flags = (unsigned int)arg->flag;
     debug("memory chunk is %d\n", elem->out_num-1);
     cuError(cuCtxSetCurrent(ctx->context));
@@ -1680,9 +1636,9 @@ static void cu_host_unregister(VirtQueueElement *elem, ThreadContext *tctx)
 
     func();
     debug("src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, elem nr=0x%x\n",
+          "dstSize=0x%x, kind=0x%lx, elem nr=0x%lx\n",
           arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->nr_elem);
+          arg->dstSize, arg->flag, arg->param);
     cuError(cuCtxSetCurrent(ctx->context));
     for(i=1; i < elem->out_num; i++) {
         ptr = elem->out_sg[i].iov_base;

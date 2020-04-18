@@ -1051,6 +1051,8 @@ sample_status_t rijndael128GCM_decrypt(const sample_aes_gcm_128bit_key_t *p_key,
 int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
                         uint8_t *p_dst,
+                        uint8_t *p_aad,
+                        uint32_t aad_len,
                         uint8_t *tag)
 {
     uint8_t aes_gcm_iv[SAMPLE_SP_IV_SIZE] = {0};
@@ -1071,8 +1073,8 @@ int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         p_dst,
                         &aes_gcm_iv[0],
                         SAMPLE_SP_IV_SIZE,
-                        NULL,
-                        0,
+                        p_aad,
+                        aad_len,
                         (sample_aes_gcm_128bit_tag_t *)tag);
     return ret;
 }

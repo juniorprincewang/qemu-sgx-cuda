@@ -53,10 +53,18 @@
     #define func() printf("[FUNC]%s\n",__FUNCTION__)
     #define debug(fmt, arg...) printf("[DEBUG] " fmt, ##arg)
     #define print(fmt, arg...) printf("" fmt, ##arg)
+    #define DPRINT_TAGS(tags)  do{  \
+                                    printf("payload_tag\n"); \
+                                    for (int idx=0; idx<SAMPLE_SP_TAG_SIZE; idx++) { \
+                                        printf("%x ", tags[idx]); \
+                                    } \
+                                    printf("\n\n"); \
+                                }while(0);
 #else
     #define func()   
     #define debug(fmt, arg...)   
     #define print(fmt, arg...) 
+    #define DPRINT_TAGS(tags)   
 #endif
 
 #define error(fmt, arg...) printf("[ERROR]In file %s, line %d, "fmt, \
@@ -391,10 +399,6 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
     int nr, j;
     uint32_t offset = 0;
     CudaContext *ctx        = &tctx->contexts[DEFAULT_DEVICE];
-#ifdef ENABLE_MAC
-    int i;
-    sp_aes_gcm_data_t *decrypt_msg;
-#endif
 
     func();
 #ifndef PRE_INIT_CTX
@@ -405,18 +409,24 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
     debug("fat_bin addr %p\n", fat_bin);
     debug("nr_binary %x\n", fat_bin->nr_binary);
 #ifdef ENABLE_MAC
-    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)fat_bin, arg->srcSize, &decrypt_msg);
-    debug("payload_tag\n");
-    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-        print("%x ", decrypt_msg->payload_tag[i]);
-    }
-    print("\n\n");
-    debug("req tag\n");
-    for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-        print("%x ", arg->mac[i]);
-    }
-    print("\n\n");
+    sp_aes_gcm_data_t *decrypt_msg;
+    uint8_t *mac;
+    /*arg mac*/
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)arg, sizeof(VirtIOArg)-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    DPRINT_TAGS(decrypt_msg->payload_tag);
+    DPRINT_TAGS(arg->mac);
     if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
+    /*binary buffer*/
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)fat_bin, arg->srcSize-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    mac = (uint8_t *)fat_bin + arg->srcSize-SAMPLE_SP_TAG_SIZE;
+    DPRINT_TAGS(decrypt_msg->payload_tag);
+    DPRINT_TAGS(mac);
+    if (cmp_mac(decrypt_msg->payload_tag, mac, SAMPLE_SP_TAG_SIZE)) {
         free(decrypt_msg);
         arg->cmd = cudaErrorInitializationError;
         return ;
@@ -447,21 +457,21 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
         cuda_module->fatbin_size         = p_binary->size;
         cuda_module->cudaKernelsCount    = p_binary->nr_func;
         cuda_module->cudaVarsCount       = p_binary->nr_var;
-#ifdef ENABLE_ENC
-        cuda_module->fatbin              = malloc(p_binary->size);
-        debug("arg payload_tag\n");
-        for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-            print("%x ", p_binary->payload_tag[i]);
-        }
-        print("\n\n");
-        if(sp_ra_decrypt_req(&tctx->g_sp_db, p_binary->buf, p_binary->size, cuda_module->fatbin, p_binary->payload_tag)) {
-            error("decrypt failed.\n");
-            arg->cmd = cudaErrorUnknown;
-            return;
-        }
-#else
+// #ifdef ENABLE_ENC
+//         cuda_module->fatbin              = malloc(p_binary->size);
+//         debug("arg payload_tag\n");
+//         for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
+//             print("%x ", p_binary->payload_tag[i]);
+//         }
+//         print("\n\n");
+//         if(sp_ra_decrypt_req(&tctx->g_sp_db, p_binary->buf, p_binary->size, cuda_module->fatbin, p_binary->payload_tag)) {
+//             error("decrypt failed.\n");
+//             arg->cmd = cudaErrorUnknown;
+//             return;
+//         }
+// #else
         cuda_module->fatbin              = p_binary->buf;
-#endif
+// #endif
         offset += p_binary->size + sizeof(binary_buf_t);
         cuError(cuModuleLoadData(&cuda_module->module, cuda_module->fatbin));
         debug("Loading module... #%d, fatbin = 0x%lx, fatbin size=0x%x\n", 
@@ -646,11 +656,33 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
     void **para_buf     = NULL;
     uint32_t *offset_buf = NULL;
     VirtIOArg *arg = NULL;
+    CUkernel_st *para;
 
     
     func();
     init_primary_context(ctx);
     arg = elem->out_sg[0].iov_base;
+#ifdef ENABLE_ENC
+    DPRINT_TAGS(arg->mac);
+    para = malloc(elem->out_sg[1].iov_len);
+    if(sp_ra_decrypt_req(&tctx->g_sp_db, elem->out_sg[1].iov_base, 
+                        elem->out_sg[1].iov_len, 
+                        (uint8_t *)para,
+                        (uint8_t *)arg, elem->out_sg[0].iov_len - SAMPLE_SP_TAG_SIZE,
+                        arg->mac)) {
+        error("decrypt failed.\n");
+        arg->cmd = cudaErrorUnknown;
+        return;
+    }
+#else
+    para = (CUkernel_st *)elem->out_sg[1].iov_base;
+    if (!para ) {
+        arg->cmd = cudaErrorInvalidConfiguration;
+        error("Invalid para configure.\n");
+        return ;
+    }
+#endif
+
     func_handle = (size_t)arg->flag;
     debug(" func_id = 0x%lx\n", func_handle);
 
@@ -670,12 +702,7 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
         return;
     }
 
-    CUkernel_st *para = (CUkernel_st *)elem->out_sg[1].iov_base;
-    if (!para ) {
-        arg->cmd = cudaErrorInvalidConfiguration;
-        error("Invalid para configure.\n");
-        return ;
-    }
+
     debug("gridDim=%u %u %u\n", para->grid_x, 
           para->grid_y, para->grid_z);
     debug("blockDim=%u %u %u\n", para->block_x,
@@ -702,6 +729,9 @@ static void cu_launch_kernel(VirtQueueElement *elem, VirtIOSerialPort *port)
                             para_buf, NULL));
     cudaError(err = cudaGetLastError());
     arg->cmd = err;
+#ifdef ENABLE_ENC
+    free(para);
+#endif
     free(para_buf);
 }
 
@@ -782,119 +812,7 @@ static void remove_plvol_by_vaddr(uint64_t vaddr, struct list_head *header, Cuda
 
 static void cuda_memcpy_safe(VirtIOArg *arg, ThreadContext *tctx)
 {
-    cudaError_t err;
-    uint32_t size;
-    void *src, *dst, *src_req, *dst_req;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-
-    func();
-    init_primary_context(ctx);
-    debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, param=0x%lx, param2=0x%lx\n",
-          arg->tid,  arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->param, arg->param2);
-    size = arg->srcSize;
-    if (arg->flag == cudaMemcpyHostToDevice) {
-        // device address
-        if( (dst = (void*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        if(arg->param) {
-            if( (src_req = (void*)map_host_addr_by_vaddr(arg->src, &ctx->host_vol))==NULL) {
-                error("Failed to find virtual addr %p in host vol\n", (void *)arg->src);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        } else {
-            if((src_req= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                error("No such physical address 0x%lx.\n", arg->param2);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        }
-        src = malloc(size);
-        if(sp_ra_decrypt_req(&tctx->g_sp_db, src_req, size, src, arg->mac)) {
-            error("Failed to decrypt. \n");
-            arg->cmd = cudaErrorUnknown;
-            return;
-        }
-        // src = decrypt_msg->payload;
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err= cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice)), ctx->context);
-        arg->cmd = err;
-        if(err != cudaSuccess) {
-            error("memcpy cudaMemcpyHostToDevice error!\n");
-        }
-        free(src);
-        src = NULL;
-        return;
-    } else if (arg->flag == cudaMemcpyDeviceToHost) {
-        // get device address
-        if( (src = (void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==0) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        // get host address from guest space
-        if(arg->param) {
-            if( (dst_req = (void*)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==0) {
-                error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        } else {
-            if((dst_req= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-                error("No such physical address 0x%lx.\n", arg->param2);
-                arg->cmd = cudaErrorInvalidValue;
-                return;
-            }
-        }
-        dst = malloc(size);
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err=cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost)), ctx->context);
-        arg->cmd = err;
-        if (cudaSuccess != err) {
-            error("memcpy cudaMemcpyDeviceToHost error!\n");
-            return;
-        }
-        if(sp_ra_encrypt_req(&tctx->g_sp_db, dst, size, dst_req, arg->mac)) {
-            error("Failed to encrypt.\n");
-            arg->cmd = cudaErrorUnknown;
-            return;
-        }
-        debug("req tag\n");
-        for (int i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-            print("%x ", arg->mac[i]);
-        }
-        print("\n\n");
-        free(dst);
-        return;
-    } else if (arg->flag == cudaMemcpyDeviceToDevice) {
-        if( (src = (void *)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-            error("Failed to find src virtual address %p in vol\n",
-                  (void *)arg->src);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        if((dst=(void *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find dst virtual address %p in vol\n",
-                  (void *)arg->dst);
-            arg->cmd = cudaErrorInvalidValue;
-            return;
-        }
-        debug("src=%p, size=0x%x, dst=%p\n", src, size, dst);
-        execute_with_context( (err=cudaMemcpy(dst, src, size, cudaMemcpyDeviceToDevice)), ctx->context );
-        arg->cmd = err;
-        if (cudaSuccess != err) {
-            error("memcpy cudaMemcpyDeviceToDevice error!\n");
-        }
-        return;
-    } else {
-        error("Error memcpy direction\n");
-        arg->cmd = cudaErrorInvalidMemcpyDirection;
-    }
+    return;
 }
 
 static void cuda_memcpy(VirtIOArg *arg, ThreadContext *tctx)
@@ -907,15 +825,33 @@ static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
     CUresult err=0;
     size_t size = 0;
     CUdeviceptr dev;
-    void *va = NULL;
     unsigned long offset = 0;
     int i=0;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    VirtIOArg *arg = NULL;
-    arg = elem->out_sg[0].iov_base;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     init_primary_context(ctx);
+#ifdef ENABLE_ENC
+    DPRINT_TAGS(arg->mac);
+    for(i=1; i<elem->out_num; i++) {
+        size += elem->out_sg[i].iov_len;
+    }
+    uint8_t *p_host = malloc(size);
+    offset=0;
+    for(i=1; i<elem->out_num; i++) {
+        memcpy(p_host+offset, elem->out_sg[i].iov_base, elem->out_sg[i].iov_len);
+        offset += elem->out_sg[i].iov_len;
+    }
+    if(sp_ra_decrypt_req(&tctx->g_sp_db, p_host, size,
+                        p_host,
+                        (uint8_t *)arg, elem->out_sg[0].iov_len - SAMPLE_SP_TAG_SIZE,
+                        arg->mac)) {
+        error("decrypt failed.\n");
+        arg->cmd = cudaErrorUnknown;
+        return;
+    }
+#endif
     debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
           "dstSize=0x%x, kind=0x%lx, block nr=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
@@ -923,6 +859,14 @@ static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
     size = arg->srcSize;
     dev = arg->dst;
     cuError(cuCtxSetCurrent(ctx->context));
+#ifdef ENABLE_ENC
+    cuError((err=cuMemcpyHtoD(dev, p_host, size)));
+    if(err != CUDA_SUCCESS) {
+        error("Failed to memcpy htod\n");
+    }
+    free(p_host);
+#else
+    void *va = NULL;
     for(i=1; i<elem->out_num; i++) {
         size = elem->out_sg[i].iov_len;
         va = elem->out_sg[i].iov_base;
@@ -933,6 +877,7 @@ static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
         }
         offset += size;
     }
+#endif
     arg->cmd = err;
 }
 
@@ -3194,8 +3139,9 @@ static void curand_set_pseudorandom_seed(VirtIOArg *arg, ThreadContext *tctx)
 
 /* SGX***********************************************************************/
 
-static void sgx_proc_msg0(VirtIOArg *arg, ThreadContext *tctx)
+static void sgx_proc_msg0(VirtQueueElement *elem, ThreadContext *tctx)
 {
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
     ra_samp_response_header_t* p_resp_msg;
     int ret = 0;
 
@@ -3204,49 +3150,55 @@ static void sgx_proc_msg0(VirtIOArg *arg, ThreadContext *tctx)
             sizeof(sample_ra_msg0_t), &p_resp_msg);
     if (0 != ret) {
         error("Error, call sp_ra_proc_msg1_req fail.\n");
-        arg->cmd = ret;
+        arg->cmd = 1;
         return;
     }
     debug("resp size is %x\n", p_resp_msg->size);
     arg->paramSize = p_resp_msg->size;
     if(p_resp_msg->size > arg->dstSize) {
         error("Memory copy is bufferoverflow!\n");
+        free(p_resp_msg);
+        arg->cmd = 1;
+        return;
     }
-    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
-                    p_resp_msg->size);
+    memcpy(elem->in_sg[0].iov_base, p_resp_msg->body, p_resp_msg->size);
     free(p_resp_msg);
-    arg->cmd = ret;
+    arg->cmd = 0;
 }
 
-static void sgx_proc_msg1(VirtIOArg *arg, ThreadContext *tctx)
+static void sgx_proc_msg1(VirtQueueElement *elem, ThreadContext *tctx)
 {
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
     sgx_ra_msg1_t msg1;
     ra_samp_response_header_t* p_resp_msg;
     int ret = 0;
 
     func();
-    cpu_physical_memory_read((hwaddr)arg->src, &msg1, sizeof(sgx_ra_msg1_t));
+    memcpy(&msg1, elem->out_sg[1].iov_base, sizeof(sgx_ra_msg1_t));
     ret = sp_ra_proc_msg1_req(&tctx->g_sp_db, (const sample_ra_msg1_t*)&msg1,
             sizeof(sgx_ra_msg1_t),
             &p_resp_msg);
     if(0 != ret) {
         error("Error, call sp_ra_proc_msg1_req fail.\n");
-        arg->cmd = ret;
+        arg->cmd = 1;
         return;
     }
     debug("resp size is %x\n", p_resp_msg->size);
     arg->paramSize = p_resp_msg->size;
     if(p_resp_msg->size > arg->dstSize) {
         error("Memory copy is bufferoverflow!\n");
+        free(p_resp_msg);
+        arg->cmd = 1;
+        return;
     }
-    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
-                    p_resp_msg->size);
+    memcpy(elem->in_sg[0].iov_base, p_resp_msg->body, p_resp_msg->size);
     free(p_resp_msg);
     arg->cmd = 0;
 }
 
-static void sgx_proc_msg3(VirtIOArg *arg, ThreadContext *tctx)
+static void sgx_proc_msg3(VirtQueueElement *elem, ThreadContext *tctx)
 {
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
     uint8_t *msg3;
     ra_samp_response_header_t* p_resp_msg;
     sample_ra_att_result_msg_t *p_att_result;
@@ -3254,13 +3206,13 @@ static void sgx_proc_msg3(VirtIOArg *arg, ThreadContext *tctx)
 
     func();
     msg3 = (uint8_t *)malloc(arg->srcSize);
-    cpu_physical_memory_read((hwaddr)arg->src, msg3, arg->srcSize);
+    memcpy(msg3, elem->out_sg[1].iov_base, arg->srcSize);
     ret = sp_ra_proc_msg3_req(&tctx->g_sp_db, (const sample_ra_msg3_t*)msg3,
             arg->srcSize,
             &p_resp_msg);
     if(0 != ret) {
         error("Error, call sp_ra_proc_msg3_req fail.\n");
-        arg->cmd = ret;
+        arg->cmd = 1;
         return;
     }
     p_att_result= (sample_ra_att_result_msg_t *)p_resp_msg->body;
@@ -3268,12 +3220,13 @@ static void sgx_proc_msg3(VirtIOArg *arg, ThreadContext *tctx)
     if(p_resp_msg->size > arg->dstSize) {
         error("Memory copy is bufferoverflow!"
             " resp size %x, req size %x\n", p_resp_msg->size, arg->dstSize);
+        arg->cmd = 1;
+        free(msg3);
+        free(p_resp_msg);
+        return;
     }
     debug("resp size is 0x%x\n", p_resp_msg->size);
-    debug("writing back\n");
-    cpu_physical_memory_write((hwaddr)arg->param, p_resp_msg->body, 
-                    arg->paramSize);
-    debug("free msg3\n");
+    memcpy(elem->in_sg[0].iov_base, p_resp_msg->body, arg->paramSize);
     free(msg3);
     free(p_resp_msg);
     arg->cmd = 0;
@@ -3577,13 +3530,13 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             curand_set_pseudorandom_seed(msg, tctx);
             break;
         case VIRTIO_SGX_MSG0:
-            sgx_proc_msg0(msg, tctx);
+            sgx_proc_msg0(elem, tctx);
             break;
         case VIRTIO_SGX_MSG1:
-            sgx_proc_msg1(msg, tctx);
+            sgx_proc_msg1(elem, tctx);
             break;
         case VIRTIO_SGX_MSG3:
-            sgx_proc_msg3(msg, tctx);
+            sgx_proc_msg3(elem, tctx);
             break;
         default:
             error("[+] header.cmd=%u, nr= %u \n",
@@ -3621,9 +3574,9 @@ static void unload_module(ThreadContext *tctx)
                 }
                 if (ctx->initialized)
                     cuError(cuModuleUnload(mod->module));
-#ifdef ENABLE_ENC
-                free(mod->fatbin);
-#endif
+// #ifdef ENABLE_ENC
+//                 free(mod->fatbin);
+// #endif
                 memset(mod, 0, sizeof(CudaModule));
             }
             ctx->moduleCount = 0;

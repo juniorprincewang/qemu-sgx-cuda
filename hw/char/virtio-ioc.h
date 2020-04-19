@@ -2,10 +2,13 @@
 #define VIRTCR_IOC_H
 
 // #define VIRTIO_CUDA_DEBUG
+#define CHUNK_SHIFT 22
+#define CHUNK_SIZE (1UL<<CHUNK_SHIFT)
 #define PAGE_SHIFT 	12
 #define PAGE_SIZE 	(1UL<<PAGE_SHIFT)
-#define ENABLE_MAC
-#ifdef ENABLE_MAC
+// #define ENABLE_SGX
+#ifdef ENABLE_SGX
+	#define ENABLE_MAC
 	#define ENABLE_ENC 
 #endif
 

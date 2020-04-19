@@ -833,29 +833,50 @@ static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
     func();
     init_primary_context(ctx);
 #ifdef ENABLE_ENC
+    /*arg mac*/
+    sp_aes_gcm_data_t *decrypt_msg;
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)arg, sizeof(VirtIOArg)-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    DPRINT_TAGS(decrypt_msg->payload_tag);
     DPRINT_TAGS(arg->mac);
-    for(i=1; i<elem->out_num; i++) {
-        size += elem->out_sg[i].iov_len;
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
     }
+    free(decrypt_msg);
+    /* mac list*/
+    uint8_t *mac_list = elem->out_sg[1].iov_base;
+    // uint32_t mac_size = elem->out_sg[1].iov_len;
+    // debug("mac nr 0x%x, elem->out_num 0x%x\n", mac_size / SAMPLE_SP_TAG_SIZE, elem->out_num);
+    size = arg->srcSize;
     uint8_t *p_host = malloc(size);
     offset=0;
-    for(i=1; i<elem->out_num; i++) {
-        memcpy(p_host+offset, elem->out_sg[i].iov_base, elem->out_sg[i].iov_len);
-        offset += elem->out_sg[i].iov_len;
+    unsigned long in_offset = 0;
+    unsigned long size_left = 0, block_size = 0;
+    int idx=0;
+    for(i=2; i < elem->out_num; i++) {
+        /*determine if continued chunk*/
+        size_left = elem->out_sg[i].iov_len;
+        debug("elem 0x%x : size 0x%lx\n", i, size_left);
+        in_offset = 0;
+        while(size_left) {
+            block_size = (size_left > CHUNK_SIZE) ? CHUNK_SIZE : size_left;
+            if(sp_ra_decrypt_req(&tctx->g_sp_db, elem->out_sg[i].iov_base + in_offset, block_size,
+                                p_host+offset+in_offset,
+                                NULL, 0,
+                                mac_list+idx*SAMPLE_SP_TAG_SIZE )) {
+                error("decrypt failed.\n");
+                arg->cmd = cudaErrorUnknown;
+                return;
+            }
+            idx += 1;
+            in_offset += block_size;
+            size_left -= block_size;
+        }
+        offset += in_offset;
     }
-    if(sp_ra_decrypt_req(&tctx->g_sp_db, p_host, size,
-                        p_host,
-                        (uint8_t *)arg, elem->out_sg[0].iov_len - SAMPLE_SP_TAG_SIZE,
-                        arg->mac)) {
-        error("decrypt failed.\n");
-        arg->cmd = cudaErrorUnknown;
-        return;
-    }
+    debug("mac nr 0x%x\n", idx);
 #endif
-    debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
-          "dstSize=0x%x, kind=0x%lx, block nr=0x%lx\n",
-          arg->tid,  arg->src, arg->srcSize, arg->dst, 
-          arg->dstSize, arg->flag, arg->param);
     size = arg->srcSize;
     dev = arg->dst;
     cuError(cuCtxSetCurrent(ctx->context));
@@ -878,6 +899,10 @@ static void cu_memcpy_htod(VirtQueueElement *elem, ThreadContext *tctx)
         offset += size;
     }
 #endif
+    debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
+          "dstSize=0x%x, kind=0x%lx\n",
+          arg->tid,  arg->src, arg->srcSize, arg->dst, 
+          arg->dstSize, arg->flag);
     arg->cmd = err;
 }
 
@@ -886,7 +911,6 @@ static void cu_memcpy_dtoh(VirtQueueElement *elem, ThreadContext *tctx)
     CUresult err=0;
     size_t size = 0;
     CUdeviceptr dev;
-    void *va = NULL;
     unsigned long offset = 0;
     int i=0;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
@@ -926,28 +950,38 @@ static void cu_memcpy_dtoh(VirtQueueElement *elem, ThreadContext *tctx)
         return;
     }
     arg->cmd = 0;
-    debug("Before encryption\n");
-    debug("encrypted data %x %x %x %x...%x %x\n", p_host[0], p_host[1], p_host[2], p_host[3],
-                                           p_host[size-2], p_host[size-1] );
-    if(sp_ra_encrypt_req(&tctx->g_sp_db, p_host, size,
-                        p_host,
-                        (uint8_t *)arg, elem->out_sg[0].iov_len - SAMPLE_SP_TAG_SIZE,
-                        arg->mac)) {
-        error("decrypt failed.\n");
-        memset(arg->mac, 0, SAMPLE_SP_TAG_SIZE);
-        arg->cmd = cudaErrorUnknown;
-        return;
+    uint8_t *mac_list = elem->in_sg[0].iov_base;
+    // uint32_t mac_size = elem->in_sg[0].iov_len;
+    // debug("mac nr 0x%x, elem->in_num 0x%x\n", mac_size / SAMPLE_SP_TAG_SIZE, elem->in_num);
+    offset=0;
+    unsigned long in_offset = 0;
+    unsigned long size_left = 0, block_size = 0;
+    int idx=0;
+    for(i=1; i < elem->in_num; i++) {
+        /*determine if continued chunk*/
+        size_left = elem->in_sg[i].iov_len;
+        debug("elem 0x%x : size 0x%lx\n", i, size_left);
+        in_offset = 0;
+        while(size_left) {
+            block_size = (size_left > CHUNK_SIZE) ? CHUNK_SIZE : size_left;
+            if(sp_ra_encrypt_req(&tctx->g_sp_db, p_host+offset+in_offset, block_size,
+                                elem->in_sg[i].iov_base + in_offset, 
+                                NULL, 0,
+                                mac_list+idx*SAMPLE_SP_TAG_SIZE )) {
+                error("decrypt failed.\n");
+                arg->cmd = cudaErrorUnknown;
+                return;
+            }
+            idx += 1;
+            in_offset += block_size;
+            size_left -= block_size;
+        }
+        offset += in_offset;
     }
-    DPRINT_TAGS(arg->mac);
-
-    for(i=0; i<elem->in_num; i++) {
-        size = elem->in_sg[i].iov_len;
-        va = elem->in_sg[i].iov_base;
-        memcpy(va, p_host+offset, size);
-        offset += size;
-    }
+    debug("mac nr 0x%x\n", idx);
     free(p_host);
 #else
+    void *va = NULL;
     for(i=0; i<elem->in_num; i++) {
         size = elem->in_sg[i].iov_len;
         va = elem->in_sg[i].iov_base;
@@ -1005,7 +1039,6 @@ static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
     CUresult err=0;
     size_t size = 0;
     CUdeviceptr dev;
-    void *va = NULL;
     unsigned long offset = 0;
     int i=0;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
@@ -1013,6 +1046,51 @@ static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
     CUstream stream;
     
     func();
+#ifdef ENABLE_ENC
+    /*arg mac*/
+    sp_aes_gcm_data_t *decrypt_msg;
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)arg, sizeof(VirtIOArg)-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    DPRINT_TAGS(decrypt_msg->payload_tag);
+    DPRINT_TAGS(arg->mac);
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
+    /* mac list*/
+    uint8_t *mac_list = elem->out_sg[1].iov_base;
+    // uint32_t mac_size = elem->out_sg[1].iov_len;
+    // debug("mac nr 0x%x, elem->out_num 0x%x\n", mac_size / SAMPLE_SP_TAG_SIZE, elem->out_num);
+    size = arg->srcSize;
+    uint8_t *p_host = malloc(size);
+    offset=0;
+    unsigned long in_offset = 0;
+    unsigned long size_left = 0, block_size = 0;
+    int idx=0;
+    for(i=2; i < elem->out_num; i++) {
+        /*determine if continued chunk*/
+        size_left = elem->out_sg[i].iov_len;
+        debug("elem 0x%x : size 0x%lx\n", i, size_left);
+        in_offset = 0;
+        while(size_left) {
+            block_size = (size_left > CHUNK_SIZE) ? CHUNK_SIZE : size_left;
+            if(sp_ra_decrypt_req(&tctx->g_sp_db, elem->out_sg[i].iov_base + in_offset, block_size,
+                                p_host+offset+in_offset,
+                                NULL, 0,
+                                mac_list+idx*SAMPLE_SP_TAG_SIZE )) {
+                error("decrypt failed.\n");
+                arg->cmd = cudaErrorUnknown;
+                return;
+            }
+            idx += 1;
+            in_offset += block_size;
+            size_left -= block_size;
+        }
+        offset += in_offset;
+    }
+    debug("mac nr 0x%x\n", idx);
+#endif
     debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
           "dstSize=0x%x, kind=0x%lx, stream=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
@@ -1021,6 +1099,14 @@ static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
     dev = arg->dst;
     stream = (CUstream)arg->stream;
     cuError(cuCtxSetCurrent(ctx->context));
+#ifdef ENABLE_ENC
+    cuError((err=cuMemcpyHtoDAsync(dev, p_host, size, stream)));
+    if(err != CUDA_SUCCESS) {
+        error("Failed to memcpy htod\n");
+    }
+    free(p_host);
+#else
+    void *va = NULL;
     for(i=1; i<elem->out_num; i++) {
         size = elem->out_sg[i].iov_len;
         va = elem->out_sg[i].iov_base;
@@ -1031,6 +1117,7 @@ static void cu_memcpy_htod_async(VirtQueueElement *elem, ThreadContext *tctx)
         }
         offset += size;
     }
+#endif
     arg->cmd = err;
 }
 
@@ -1039,7 +1126,6 @@ static void cu_memcpy_dtoh_async(VirtQueueElement *elem, ThreadContext *tctx)
     CUresult err=0;
     size_t size = 0;
     CUdeviceptr dev;
-    void *va = NULL;
     unsigned long offset = 0;
     int i=0;
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
@@ -1047,6 +1133,19 @@ static void cu_memcpy_dtoh_async(VirtQueueElement *elem, ThreadContext *tctx)
     CUstream stream;
 
     func();
+#ifdef ENABLE_ENC
+    sp_aes_gcm_data_t *decrypt_msg;
+    /*arg mac*/
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)arg, sizeof(VirtIOArg)-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    DPRINT_TAGS(decrypt_msg->payload_tag);
+    DPRINT_TAGS(arg->mac);
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
+#endif
     debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
           "dstSize=0x%x, kind=0x%lx, stream=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
@@ -1054,6 +1153,50 @@ static void cu_memcpy_dtoh_async(VirtQueueElement *elem, ThreadContext *tctx)
     dev = (CUdeviceptr)arg->src;
     stream = (CUstream)arg->stream;
     cuError(cuCtxSetCurrent(ctx->context));
+#ifdef ENABLE_ENC
+    size = arg->srcSize;
+    uint8_t *p_host = malloc(size);
+    cuError((err=cuMemcpyDtoHAsync(p_host, dev, size, stream)));
+    if(err != CUDA_SUCCESS) {
+        error("Failed to memcpy dtoh\n");
+        arg->cmd = err;
+        memset(arg->mac, 0, SAMPLE_SP_TAG_SIZE);
+        return;
+    }
+    arg->cmd = 0;
+    uint8_t *mac_list = elem->in_sg[0].iov_base;
+    // uint32_t mac_size = elem->in_sg[0].iov_len;
+    // debug("mac nr 0x%x, elem->in_num 0x%x\n", mac_size / SAMPLE_SP_TAG_SIZE, elem->in_num);
+    offset=0;
+    unsigned long in_offset = 0;
+    unsigned long size_left = 0, block_size = 0;
+    int idx=0;
+    for(i=1; i < elem->in_num; i++) {
+        /*determine if continued chunk*/
+        size_left = elem->in_sg[i].iov_len;
+        debug("elem 0x%x : size 0x%lx\n", i, size_left);
+        in_offset = 0;
+        while(size_left) {
+            block_size = (size_left > CHUNK_SIZE) ? CHUNK_SIZE : size_left;
+            if(sp_ra_encrypt_req(&tctx->g_sp_db, p_host+offset+in_offset, block_size,
+                                elem->in_sg[i].iov_base + in_offset, 
+                                NULL, 0,
+                                mac_list+idx*SAMPLE_SP_TAG_SIZE )) {
+                error("decrypt failed.\n");
+                arg->cmd = cudaErrorUnknown;
+                return;
+            }
+            idx += 1;
+            in_offset += block_size;
+            size_left -= block_size;
+        }
+        offset += in_offset;
+    }
+    debug("mac nr 0x%x\n", idx);
+    free(p_host);
+#else
+    void *va = NULL;
+    offset=0;
     for(i=0; i<elem->in_num; i++) {
         size = elem->in_sg[i].iov_len;
         va = elem->in_sg[i].iov_base;
@@ -1066,6 +1209,7 @@ static void cu_memcpy_dtoh_async(VirtQueueElement *elem, ThreadContext *tctx)
         offset += size;
     }
     arg->cmd = err;
+#endif
 }
 
 static void cu_memcpy_dtod_async(VirtQueueElement *elem, ThreadContext *tctx)
@@ -1078,6 +1222,19 @@ static void cu_memcpy_dtod_async(VirtQueueElement *elem, ThreadContext *tctx)
     CUstream stream;
 
     func();
+#ifdef ENABLE_ENC
+    sp_aes_gcm_data_t *decrypt_msg;
+    /*arg mac*/
+    sp_ra_mac_req(&tctx->g_sp_db, (uint8_t *)arg, sizeof(VirtIOArg)-SAMPLE_SP_TAG_SIZE, &decrypt_msg);
+    DPRINT_TAGS(decrypt_msg->payload_tag);
+    DPRINT_TAGS(arg->mac);
+    if (cmp_mac(decrypt_msg->payload_tag, arg->mac, SAMPLE_SP_TAG_SIZE)) {
+        free(decrypt_msg);
+        arg->cmd = cudaErrorInitializationError;
+        return ;
+    }
+    free(decrypt_msg);
+#endif
     debug("tid = %d, src=0x%lx, srcSize=0x%x, dst=0x%lx, "
           "dstSize=0x%x, kind=0x%lx, stream=0x%lx\n",
           arg->tid,  arg->src, arg->srcSize, arg->dst, 
@@ -1968,7 +2125,6 @@ static void cuda_device_synchronize(VirtQueueElement *elem, ThreadContext *tctx)
     CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     VirtIOArg *arg = elem->out_sg[0].iov_base;
     func();
-    // execute_with_context(err = cudaDeviceSynchronize(), ctx->context);
     if (ctx->initialized)
         execute_with_cu_context(err = cuCtxSynchronize(), ctx->context);
     arg->cmd = err;

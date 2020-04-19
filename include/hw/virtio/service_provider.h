@@ -150,6 +150,7 @@ int sp_ra_decrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
 int sp_ra_encrypt_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,
                         uint32_t msg_size,
                         uint8_t *p_dst,
+                        uint8_t *p_add, uint32_t add_len,
                         uint8_t *mac_tag);
 
 int sp_ra_mac_req(sp_db_item_t *g_sp_db, const uint8_t *p_msg,

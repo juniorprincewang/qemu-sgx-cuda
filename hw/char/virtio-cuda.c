@@ -2179,35 +2179,35 @@ static void cuda_mem_get_info(VirtQueueElement *elem, ThreadContext *tctx)
     debug("free memory = %lu, total memory = %lu.\n", freeMem, totalMem);
 }
 
-static void cublas_create(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_create(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
     cublasHandle_t handle;
-    hwaddr gpa = (hwaddr)(arg->dst);
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     cublasCheck(status = cublasCreate_v2(&handle));
-    cpu_physical_memory_write(gpa, &handle, arg->srcSize);
+    memcpy(elem->in_sg[0].iov_base, &handle, sizeof(cublasHandle_t));
     arg->cmd = status;
     debug("cublas handle 0x%lx\n", (uint64_t)handle);
 }
 
-static void cublas_destroy(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_destroy(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    cublasHandle_t handle;
-    hwaddr gpa = (hwaddr)(arg->dst);
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+    cublasHandle_t handle = (cublasHandle_t)arg->flag;
+
     func();
-    cpu_physical_memory_read(gpa, &handle, arg->srcSize);
     cublasCheck(status = cublasDestroy_v2(handle));
     arg->cmd = status;
     debug("cublas handle 0x%lx\n", (uint64_t)handle);
 }
 
-static void cublas_set_vector(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_set_vector(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    int size = 0;
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     int n;
     int elemSize;
     int incx, incy;
@@ -2215,33 +2215,12 @@ static void cublas_set_vector(VirtIOArg *arg, ThreadContext *tctx)
     void *src, *dst;
     int int_size = sizeof(int);
     int idx = 0;
-    func();
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
-    // device address
-    if( (dst = (void*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
-    size = arg->srcSize;
-    if(arg->flag) {
-        if( (src = (void*)map_host_addr_by_vaddr(arg->src, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->src);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    } else {
-        if((src= gpa_to_hva((hwaddr)arg->src, size)) == NULL) {
-            error("No such physical address 0x%lx.\n", arg->src);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
+    func();
+    dst = (void*)arg->dst;
+    src = elem->out_sg[2].iov_base;
+    buf = elem->out_sg[1].iov_base;
     memcpy(&n, buf+idx, int_size);
     idx += int_size;
     memcpy(&elemSize, buf+idx, int_size);
@@ -2255,11 +2234,10 @@ static void cublas_set_vector(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_get_vector(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_get_vector(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    int size = 0;
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     int n;
     int elemSize;
     int incx, incy;
@@ -2267,33 +2245,12 @@ static void cublas_get_vector(VirtIOArg *arg, ThreadContext *tctx)
     void *src, *dst;
     int int_size = sizeof(int);
     int idx = 0;
-    func();
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
-    // device address
-    if( (src = (void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
-    size = arg->srcSize;
-    if(arg->flag) {
-        if( (dst = (void*)map_host_addr_by_vaddr(arg->param2, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->param2);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    } else {
-        if((dst= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-            error("No such physical address 0x%lx.\n", arg->param2);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
+    func();
+    buf = elem->out_sg[1].iov_base;
+    src = (void*)arg->src;
+    dst = (void*)elem->in_sg[0].iov_base;
     memcpy(&n, buf+idx, int_size);
     idx += int_size;
     memcpy(&elemSize, buf+idx, int_size);
@@ -2307,11 +2264,10 @@ static void cublas_get_vector(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_set_matrix(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_set_matrix(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    int size = 0;
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     int rows, cols;
     int elemSize;
     int lda, ldb;
@@ -2319,33 +2275,12 @@ static void cublas_set_matrix(VirtIOArg *arg, ThreadContext *tctx)
     void *src, *dst;
     int int_size = sizeof(int);
     int idx = 0;
-    func();
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
-    // device address
-    if( (dst = (void*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
-    size = arg->srcSize;
-    if(arg->flag) {
-        if( (src = (void*)map_host_addr_by_vaddr(arg->src, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->src);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    } else {
-        if((src= gpa_to_hva((hwaddr)arg->src, size)) == NULL) {
-            error("No such physical address 0x%lx.\n", arg->src);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
+    func();
+    dst = (void*)arg->dst;
+    buf = elem->out_sg[1].iov_base;
+    src = elem->out_sg[2].iov_base;
     memcpy(&rows, buf+idx, int_size);
     idx += int_size;
     memcpy(&cols, buf+idx, int_size);
@@ -2361,11 +2296,10 @@ static void cublas_set_matrix(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_get_matrix(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_get_matrix(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
-    int size = 0;
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     int rows, cols;
     int elemSize;
     int lda, ldb;
@@ -2373,33 +2307,13 @@ static void cublas_get_matrix(VirtIOArg *arg, ThreadContext *tctx)
     void *src, *dst;
     int int_size = sizeof(int);
     int idx = 0;
-    func();
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
+    func();
     // device address
-    if( (src = (void*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
-    size = arg->srcSize;
-    if(arg->flag) {
-        if( (dst = (void*)map_host_addr_by_vaddr(arg->param2, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->param2);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    } else {
-        if((dst= gpa_to_hva((hwaddr)arg->param2, size)) == NULL) {
-            error("No such physical address 0x%lx.\n", arg->param2);
-            arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-            return;
-        }
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_MAPPING_ERROR;
-        return;
-    }
+    src = (void*)arg->src;
+    dst = (void*)elem->in_sg[0].iov_base;
+    buf = elem->out_sg[1].iov_base;
     memcpy(&rows, buf+idx, int_size);
     idx += int_size;
     memcpy(&cols, buf+idx, int_size);
@@ -2415,10 +2329,10 @@ static void cublas_get_matrix(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_sgemm(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_sgemm(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     void *buf = NULL;
     int int_size = sizeof(int);
     int idx = 0;
@@ -2430,29 +2344,14 @@ static void cublas_sgemm(VirtIOArg *arg, ThreadContext *tctx)
     float *A, *B, *C;
     float alpha; /* host or device pointer */
     float beta; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (A = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (B = (float*)map_device_addr_by_vaddr(arg->src2, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src2);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (C = (float*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
+    A = (void*)arg->src;
+    B = (void*)arg->src2;
+    C = (void*)arg->dst;
+    buf = (uint8_t *)elem->out_sg[1].iov_base;
     memcpy(&handle, buf+idx, sizeof(cublasHandle_t));
     idx += sizeof(cublasHandle_t);
     memcpy(&transa, buf+idx, sizeof(cublasOperation_t));
@@ -2487,10 +2386,10 @@ static void cublas_sgemm(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_dgemm(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_dgemm(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     void *buf = NULL;
     int int_size = sizeof(int);
     int idx = 0;
@@ -2502,29 +2401,14 @@ static void cublas_dgemm(VirtIOArg *arg, ThreadContext *tctx)
     double *A, *B, *C;
     double alpha; /* host or device pointer */
     double beta; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (A = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (B = (double*)map_device_addr_by_vaddr(arg->src2, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src2);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (C = (double*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
+    A = (void*)arg->src;
+    B = (void*)arg->src2;
+    C = (void*)arg->dst;
+    buf = (uint8_t *)elem->out_sg[1].iov_base;
     memcpy(&handle, buf+idx, sizeof(cublasHandle_t));
     idx += sizeof(cublasHandle_t);
     memcpy(&transa, buf+idx, sizeof(cublasOperation_t));
@@ -2559,138 +2443,101 @@ static void cublas_dgemm(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_set_stream(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_set_stream(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
     cublasHandle_t handle;
-    int pos = (int)arg->dst;
     cudaStream_t stream = 0;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
-    debug("stream pos = 0x%x\n", pos);
-    if (pos==0) {
-        stream=0;
-    } else if (!__get_bit(&ctx->cudaStreamBitmap, pos-1)) {
-        stream = ctx->cudaStream[pos-1];
-    } else {
-        error("No such stream, pos=0x%x\n", pos);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
     handle = (cublasHandle_t)arg->src;
+    stream = (cudaStream_t)arg->stream;
     debug("handle 0x%lx, stream %lx\n", (uint64_t)handle, (uint64_t)stream);
     cublasCheck(status = cublasSetStream_v2(handle, stream));
     arg->cmd = status;
 }
 
-static void cublas_get_stream(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_get_stream(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
     cublasHandle_t handle;
-    int pos = 0;
     cudaStream_t stream = 0;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     handle = (cublasHandle_t)arg->src;
     cublasCheck(status = cublasGetStream_v2(handle, &stream));
     arg->cmd = status;
     debug("handle 0x%lx, stream %lx\n", (uint64_t)handle, (uint64_t)stream);
-    if (stream == NULL)
-        pos = 0;
-    else {
-        for(int i=0; i<sizeof(BITS_PER_WORD); i++) {
-            if(!__get_bit(&ctx->cudaStreamBitmap, i)) {
-                pos = i+1;
-                break;
-            }
-        }
-        if(pos==0) {
-            error("No such stream\n");
-            arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-            return;
-        }
-    }
-    debug("stream pos = 0x%x\n", pos);
+    arg->stream = (uint64_t)stream;
 }
 
-static void cublas_sasum(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_sasum(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx;
     float *x;
     float result; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_ALLOC_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->dst;
+    x = (void*)arg->src;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     cublasCheck(status = cublasSasum_v2(handle, n, x, incx, &result));
     debug("handle=%lx, n=%d, x=%p, incx=%d, result=%g\n",
             (uint64_t)handle, n, x, incx, result);
-    cpu_physical_memory_write((hwaddr)arg->param2, &result, arg->paramSize);
+    memcpy(elem->in_sg[0].iov_base, &result, sizeof(float));
     arg->cmd = status;
 }
 
-static void cublas_dasum(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_dasum(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx;
     double *x;
     double result; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_ALLOC_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->dst;
+    x = (void*)arg->src;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     cublasCheck(status = cublasDasum_v2(handle, n, x, incx, &result));
     debug("handle=%lx, n=%d, x=%p, incx=%d, result=%g\n",
             (uint64_t)handle, n, x, incx, result);
-    cpu_physical_memory_write((hwaddr)arg->param2, &result, arg->paramSize);
+    memcpy(elem->in_sg[0].iov_base, &result, sizeof(double));
     arg->cmd = status;
 }
 
-static void cublas_scopy(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_scopy(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
     float *x, *y;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (float*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
@@ -2700,28 +2547,21 @@ static void cublas_scopy(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_dcopy(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_dcopy(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
     double *x, *y;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (double*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
@@ -2731,76 +2571,62 @@ static void cublas_dcopy(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_sdot(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_sdot(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
     float *x, *y;
     float result;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (float*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
     cublasCheck(status = cublasSdot_v2(handle, n, x, incx, y, incy, &result));
     debug("handle=%lx, n=%d, x=%p, incx=%d, y=%p, incy=%d, result=%g\n",
             (uint64_t)handle, n, x, incx, y, incy, result);
-    cpu_physical_memory_write((hwaddr)arg->param2, &result, arg->paramSize);
+    memcpy(elem->in_sg[0].iov_base, &result, sizeof(float));
     arg->cmd = status;
 }
 
-static void cublas_ddot(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_ddot(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
     double *x, *y;
     double result;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (double*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
     cublasCheck(status = cublasDdot_v2(handle, n, x, incx, y, incy, &result));
     debug("handle=%lx, n=%d, x=%p, incx=%d, y=%p, incy=%d, result=%g\n",
             (uint64_t)handle, n, x, incx, y, incy, result);
-    cpu_physical_memory_write((hwaddr)arg->param2, &result, arg->paramSize);
+    memcpy(elem->in_sg[0].iov_base, &result, sizeof(double));
     arg->cmd = status;
 }
 
-static void cublas_saxpy(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_saxpy(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
@@ -2808,25 +2634,14 @@ static void cublas_saxpy(VirtIOArg *arg, ThreadContext *tctx)
     float alpha; /* host or device pointer */
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (float*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    buf = elem->out_sg[1].iov_base;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
@@ -2839,10 +2654,10 @@ static void cublas_saxpy(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_daxpy(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_daxpy(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx, incy;
@@ -2850,25 +2665,14 @@ static void cublas_daxpy(VirtIOArg *arg, ThreadContext *tctx)
     double alpha; /* host or device pointer */
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if( (y = (double*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    y = (void*)arg->dst;
+    buf = elem->out_sg[1].iov_base;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     incy    = (int)arg->dstSize;
@@ -2881,10 +2685,10 @@ static void cublas_daxpy(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_sscal(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_sscal(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx;
@@ -2892,20 +2696,13 @@ static void cublas_sscal(VirtIOArg *arg, ThreadContext *tctx)
     float alpha;
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    buf = elem->out_sg[1].iov_base;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     memcpy(&alpha, buf+idx, sizeof(float));
@@ -2917,10 +2714,10 @@ static void cublas_sscal(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_dscal(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_dscal(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     cublasHandle_t handle;
     int n;
     int incx;
@@ -2928,20 +2725,13 @@ static void cublas_dscal(VirtIOArg *arg, ThreadContext *tctx)
     double alpha;
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_NOT_INITIALIZED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    handle  = (cublasHandle_t)arg->src2;
+    x = (void*)arg->src;
+    buf = elem->out_sg[1].iov_base;
+    handle  = (cublasHandle_t)arg->flag;
     n       = (int)arg->srcSize;
     incx    = (int)arg->srcSize2;
     memcpy(&alpha, buf+idx, sizeof(double));
@@ -2953,10 +2743,10 @@ static void cublas_dscal(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_sgemv(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_sgemv(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     uint8_t *buf = NULL;
     int int_size = sizeof(int);
     int idx = 0;
@@ -2967,29 +2757,14 @@ static void cublas_sgemv(VirtIOArg *arg, ThreadContext *tctx)
     int incx, incy;
     float *x, *y, *A;
     float alpha, beta; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (A = (float*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (x = (float*)map_device_addr_by_vaddr(arg->src2, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src2);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (y = (float*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
+    A = (void*)arg->src;
+    x = (void*)arg->src2;
+    y = (void*)arg->dst;
+    buf = (uint8_t *)elem->out_sg[1].iov_base;
     n       = (int)arg->srcSize2;
     m       = (int)arg->dstSize;
     memcpy(&handle, buf+idx, sizeof(cublasHandle_t));
@@ -3017,10 +2792,10 @@ static void cublas_sgemv(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void cublas_dgemv(VirtIOArg *arg, ThreadContext *tctx)
+static void cublas_dgemv(VirtQueueElement *elem, ThreadContext *tctx)
 {
     cublasStatus_t status = -1;
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     uint8_t *buf = NULL;
     int int_size = sizeof(int);
     int idx = 0;
@@ -3031,29 +2806,14 @@ static void cublas_dgemv(VirtIOArg *arg, ThreadContext *tctx)
     int incx, incy;
     double *x, *y, *A;
     double alpha, beta; /* host or device pointer */
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if( (A = (double*)map_device_addr_by_vaddr(arg->src, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (x = (double*)map_device_addr_by_vaddr(arg->src2, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->src2);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if( (y = (double*)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-        error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CUBLAS_STATUS_EXECUTION_FAILED;
-        return;
-    }
+    A = (void*)arg->src;
+    x = (void*)arg->src2;
+    y = (void*)arg->dst;
+    buf = (uint8_t *)elem->out_sg[1].iov_base;
     n       = (int)arg->srcSize2;
     m       = (int)arg->dstSize;
     memcpy(&handle, buf+idx, sizeof(cublasHandle_t));
@@ -3651,70 +3411,70 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             cu_memcpy_from_symbol(elem, tctx);
             break;
         case VIRTIO_CUBLAS_CREATE:
-            cublas_create(msg, tctx);
+            cublas_create(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DESTROY:
-            cublas_destroy(msg, tctx);
+            cublas_destroy(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SETVECTOR:
-            cublas_set_vector(msg, tctx);
+            cublas_set_vector(elem, tctx);
             break;
         case VIRTIO_CUBLAS_GETVECTOR:
-            cublas_get_vector(msg, tctx);
+            cublas_get_vector(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SETMATRIX:
-            cublas_set_matrix(msg, tctx);
+            cublas_set_matrix(elem, tctx);
             break;
         case VIRTIO_CUBLAS_GETMATRIX:
-            cublas_get_matrix(msg, tctx);
+            cublas_get_matrix(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SGEMM:
-            cublas_sgemm(msg, tctx);
+            cublas_sgemm(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DGEMM:
-            cublas_dgemm(msg, tctx);
+            cublas_dgemm(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SETSTREAM:
-            cublas_set_stream(msg, tctx);
+            cublas_set_stream(elem, tctx);
             break;
         case VIRTIO_CUBLAS_GETSTREAM:
-            cublas_get_stream(msg, tctx);
+            cublas_get_stream(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SASUM:
-            cublas_sasum(msg, tctx);
+            cublas_sasum(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DASUM:
-            cublas_dasum(msg, tctx);
+            cublas_dasum(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SAXPY:
-            cublas_saxpy(msg, tctx);
+            cublas_saxpy(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DAXPY:
-            cublas_daxpy(msg, tctx);
+            cublas_daxpy(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SCOPY:
-            cublas_scopy(msg, tctx);
+            cublas_scopy(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DCOPY:
-            cublas_dcopy(msg, tctx);
+            cublas_dcopy(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SGEMV:
-            cublas_sgemv(msg, tctx);
+            cublas_sgemv(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DGEMV:
-            cublas_dgemv(msg, tctx);
+            cublas_dgemv(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SDOT:
-            cublas_sdot(msg, tctx);
+            cublas_sdot(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DDOT:
-            cublas_ddot(msg, tctx);
+            cublas_ddot(elem, tctx);
             break;
         case VIRTIO_CUBLAS_SSCAL:
-            cublas_sscal(msg, tctx);
+            cublas_sscal(elem, tctx);
             break;
         case VIRTIO_CUBLAS_DSCAL:
-            cublas_dscal(msg, tctx);
+            cublas_dscal(elem, tctx);
             break;
         case VIRTIO_CURAND_CREATEGENERATOR:
             curand_create_generator(msg, tctx);

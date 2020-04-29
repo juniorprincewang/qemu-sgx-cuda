@@ -2841,11 +2841,13 @@ static void cublas_dgemv(VirtQueueElement *elem, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void curand_create_generator(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_create_generator(VirtQueueElement *elem, ThreadContext *tctx)
 {
     curandStatus_t status = -1;
     curandGenerator_t generator;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
     curandRngType_t rng_type = (curandRngType_t)arg->dst;
+
     func();
     curandCheck(status = curandCreateGenerator(&generator, rng_type));
     arg->flag = (uint64_t)generator;
@@ -2853,11 +2855,13 @@ static void curand_create_generator(VirtIOArg *arg, ThreadContext *tctx)
     debug("curand generator 0x%lx\n", (uint64_t)generator);
 }
 
-static void curand_create_generator_host(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_create_generator_host(VirtQueueElement *elem, ThreadContext *tctx)
 {
     curandStatus_t status = -1;
     curandGenerator_t generator;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
     curandRngType_t rng_type = (curandRngType_t)arg->dst;
+
     func();
     curandCheck(status = curandCreateGeneratorHost(&generator, rng_type));
     arg->flag = (uint64_t)generator;
@@ -2865,34 +2869,21 @@ static void curand_create_generator_host(VirtIOArg *arg, ThreadContext *tctx)
     debug("curand generator 0x%lx\n", (uint64_t)generator);
 }
 
-static void curand_generate(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_generate(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     curandStatus_t status = -1;
     curandGenerator_t generator;
     unsigned int *ptr;
     size_t n;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     // device address
-    if (arg->flag == 0) {
-        if( (ptr = (unsigned int *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
-    } else if(arg->flag == 1) {
-        if((ptr = (unsigned int *)gpa_to_hva((hwaddr)arg->param2, arg->dstSize))==NULL) {
-            error("No such physical address %p.\n", (void *)arg->param2);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
-    } else if (arg->flag == 2) {
-        if( (ptr = (unsigned int *)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+    if(arg->flag == 1) {
+        ptr = elem->in_sg[0].iov_base;
+    } else {
+        ptr = (void *)arg->dst;
     }
     generator   = (curandGenerator_t)arg->src;
     n           = (size_t)arg->param;
@@ -2901,9 +2892,9 @@ static void curand_generate(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void curand_generate_normal(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_generate_normal(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     curandStatus_t status = -1;
     curandGenerator_t generator;
     float *ptr;
@@ -2911,32 +2902,15 @@ static void curand_generate_normal(VirtIOArg *arg, ThreadContext *tctx)
     float mean, stddev;
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such param physical address 0x%lx.\n", arg->param);
-        arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-        return;
-    }
+    buf = elem->out_sg[1].iov_base;
     // device address
     if (arg->flag == 0) {
-        if( (ptr = (float *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = (float *)arg->dst;
     } else if(arg->flag == 1) {
-        if((ptr = (float *)gpa_to_hva((hwaddr)arg->param2, arg->dstSize))==NULL) {
-            error("No such physical address %p.\n", (void *)arg->param2);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
-    } else if (arg->flag == 2) {
-        if( (ptr = (float*)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = elem->in_sg[0].iov_base;
     }
     generator   = (curandGenerator_t)arg->src;
     n           = (size_t)arg->src2;
@@ -2951,9 +2925,9 @@ static void curand_generate_normal(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void curand_generate_normal_double(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_generate_normal_double(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     curandStatus_t status = -1;
     curandGenerator_t generator;
     double *ptr;
@@ -2961,32 +2935,15 @@ static void curand_generate_normal_double(VirtIOArg *arg, ThreadContext *tctx)
     double mean, stddev;
     uint8_t *buf = NULL;
     int idx = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
 
     func();
     if (arg->flag == 0) {
-        if( (ptr = (double *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = (double *)arg->dst;
     } else if(arg->flag == 1) {
-        if((ptr = (double *)gpa_to_hva((hwaddr)arg->param2, arg->dstSize))==NULL) {
-            error("No such physical address %p.\n", (void *)arg->param2);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
-    } else if (arg->flag == 2) {
-        if((ptr = (double *)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = elem->in_sg[0].iov_base;
     }
-    if((buf = gpa_to_hva((hwaddr)arg->param, arg->paramSize))==NULL) {
-        error("No such physical address 0x%lx.\n", arg->param);
-        arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-        return;
-    }
+    buf = elem->out_sg[1].iov_base;
     generator   = (curandGenerator_t)arg->src;
     n           = (size_t)arg->src2;
     memcpy(&mean, buf+idx, sizeof(double));
@@ -3000,71 +2957,58 @@ static void curand_generate_normal_double(VirtIOArg *arg, ThreadContext *tctx)
     arg->cmd = status;
 }
 
-static void curand_generate_uniform(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_generate_uniform(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     curandStatus_t status = -1;
     curandGenerator_t generator;
     float *ptr;
-    size_t num;
+    size_t num, size;
+    unsigned long offset = 0;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     generator   = (curandGenerator_t)arg->src;
     num         = (size_t)arg->param;
+    size        = num * sizeof(float);
+
+    debug("curand generator 0x%lx, num=0x%lx, size=0x%lx\n", 
+            (uint64_t)generator, num, size);
     // device address
     if (arg->flag == 0) {
-        if( (ptr = (float *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = (float *)arg->dst;
+        curandCheck(status = curandGenerateUniform(generator, ptr, num));
     } else if(arg->flag == 1) {
-        if((ptr = (float *)gpa_to_hva((hwaddr)arg->param2, arg->dstSize))==NULL) {
-            error("No such physical address 0x%lx.\n", arg->param2);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
+        float *outputPtr = (float *)malloc(size);
+        curandCheck(status = curandGenerateUniform(generator, outputPtr, num));
+        for(int i=0; i<elem->in_num; i++) {
+            debug("%d, ptr %p, len 0x%lx, offset 0x%lx\n", i, elem->in_sg[i].iov_base, elem->in_sg[i].iov_len, offset);
+            memcpy(elem->in_sg[i].iov_base, outputPtr+offset, elem->in_sg[i].iov_len);
+            offset += elem->in_sg[i].iov_len;
         }
-    } else if (arg->flag == 2) {
-        if( (ptr = (float*)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        assert(offset == size && "Failed to match the length\n");
+        free(outputPtr);
     }
-    curandCheck(status = curandGenerateUniform(generator, ptr, num));
     arg->cmd = status;
-    debug("curand generator 0x%lx, ptr=%p, num=0x%lx\n", 
-            (uint64_t)generator, ptr, num);
 }
 
-static void curand_generate_uniform_double(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_generate_uniform_double(VirtQueueElement *elem, ThreadContext *tctx)
 {
-    CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
+    // CudaContext *ctx = &tctx->contexts[tctx->cur_dev];
     curandStatus_t status = -1;
     curandGenerator_t generator;
     double *ptr;
     size_t num;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     generator   = (curandGenerator_t)arg->src;
     num         = (size_t)arg->param;
     // device address
     if (arg->flag == 0) {
-        if( (ptr = (double *)map_device_addr_by_vaddr(arg->dst, &ctx->vol))==NULL) {
-            error("Failed to find virtual addr %p in vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = (double *)arg->dst;
     } else if(arg->flag == 1) {
-        if((ptr = (double *)gpa_to_hva((hwaddr)arg->param2, arg->dstSize))==NULL) {
-            error("No such physical address 0x%lx.\n", arg->param2);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
-    } else if (arg->flag == 2) {
-        if((ptr = (double *)map_host_addr_by_vaddr(arg->dst, &ctx->host_vol))==NULL) {
-            error("Failed to find virtual addr %p in host vol\n", (void *)arg->dst);
-            arg->cmd = CURAND_STATUS_ALLOCATION_FAILED;
-            return;
-        }
+        ptr = elem->in_sg[0].iov_base;
     }
     curandCheck(status = curandGenerateUniformDouble(generator, ptr, num));
     arg->cmd = status;
@@ -3072,10 +3016,12 @@ static void curand_generate_uniform_double(VirtIOArg *arg, ThreadContext *tctx)
             (uint64_t)generator, ptr, num);
 }
 
-static void curand_destroy_generator(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_destroy_generator(VirtQueueElement *elem, ThreadContext *tctx)
 {
     curandStatus_t status = -1;
     curandGenerator_t generator;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     generator   = (curandGenerator_t)arg->src;
     curandCheck(status = curandDestroyGenerator(generator));
@@ -3083,12 +3029,14 @@ static void curand_destroy_generator(VirtIOArg *arg, ThreadContext *tctx)
     debug("curand destroy generator 0x%lx\n", (uint64_t)generator);
 }
 
-static void curand_set_generator_offset(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_set_generator_offset(VirtQueueElement *elem, ThreadContext *tctx)
 {
     curandStatus_t status = -1;
     curandGenerator_t generator;
     unsigned long long offset;
     unsigned long long seed;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     generator   = (curandGenerator_t)arg->src;
     offset      = (unsigned long long)arg->param;
@@ -3100,11 +3048,13 @@ static void curand_set_generator_offset(VirtIOArg *arg, ThreadContext *tctx)
         (uint64_t)generator, seed, offset);
 }
 
-static void curand_set_pseudorandom_seed(VirtIOArg *arg, ThreadContext *tctx)
+static void curand_set_pseudorandom_seed(VirtQueueElement *elem, ThreadContext *tctx)
 {
     curandStatus_t status = -1;
     curandGenerator_t generator;
     unsigned long long seed;
+    VirtIOArg *arg = elem->out_sg[0].iov_base;
+
     func();
     generator   = (curandGenerator_t)arg->src;
     seed      = (unsigned long long)arg->param;
@@ -3477,34 +3427,34 @@ static ssize_t handle_output(VirtIOSerialPort *port,
             cublas_dscal(elem, tctx);
             break;
         case VIRTIO_CURAND_CREATEGENERATOR:
-            curand_create_generator(msg, tctx);
+            curand_create_generator(elem, tctx);
             break;
         case VIRTIO_CURAND_CREATEGENERATORHOST:
-            curand_create_generator_host(msg, tctx);
+            curand_create_generator_host(elem, tctx);
             break;
         case VIRTIO_CURAND_GENERATE:
-            curand_generate(msg, tctx);
+            curand_generate(elem, tctx);
             break;
         case VIRTIO_CURAND_GENERATENORMAL:
-            curand_generate_normal(msg, tctx);
+            curand_generate_normal(elem, tctx);
             break;
         case VIRTIO_CURAND_GENERATENORMALDOUBLE:
-            curand_generate_normal_double(msg, tctx);
+            curand_generate_normal_double(elem, tctx);
             break;
         case VIRTIO_CURAND_GENERATEUNIFORM:
-            curand_generate_uniform(msg, tctx);
+            curand_generate_uniform(elem, tctx);
             break;
         case VIRTIO_CURAND_GENERATEUNIFORMDOUBLE:
-            curand_generate_uniform_double(msg, tctx);
+            curand_generate_uniform_double(elem, tctx);
             break;
         case VIRTIO_CURAND_DESTROYGENERATOR:
-            curand_destroy_generator(msg, tctx);
+            curand_destroy_generator(elem, tctx);
             break;
         case VIRTIO_CURAND_SETGENERATOROFFSET:
-            curand_set_generator_offset(msg, tctx);
+            curand_set_generator_offset(elem, tctx);
             break;
         case VIRTIO_CURAND_SETPSEUDORANDOMSEED:
-            curand_set_pseudorandom_seed(msg, tctx);
+            curand_set_pseudorandom_seed(elem, tctx);
             break;
         case VIRTIO_SGX_MSG0:
             sgx_proc_msg0(elem, tctx);

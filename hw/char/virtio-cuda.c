@@ -405,8 +405,17 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
     cuError(cuCtxCreate(&ctx->context, 0, ctx->dev));
 #endif
     arg = elem->out_sg[0].iov_base;
-    fat_bin = (fatbin_buf_t *)(elem->out_sg[1].iov_base);
-    debug("fat_bin addr %p\n", fat_bin);
+    int len = 0;
+    for(int i=1; i<elem->out_num; i++) {
+        len += elem->out_sg[i].iov_len;
+    }
+    uint8_t *buf = (uint8_t *)malloc(len);
+    offset = 0;
+    for(int i=1; i<elem->out_num; i++) {
+        memcpy(buf+offset, elem->out_sg[i].iov_base, elem->out_sg[i].iov_len);
+        offset+=elem->out_sg[i].iov_len;
+    }
+    fat_bin = (fatbin_buf_t *)buf;
     debug("nr_binary %x\n", fat_bin->nr_binary);
 #ifdef ENABLE_MAC
     sp_aes_gcm_data_t *decrypt_msg;
@@ -433,6 +442,7 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
     }
     free(decrypt_msg);
 #endif
+    offset = 0;
     cuError(cuCtxSetCurrent(ctx->context));
     for(nr=0; nr<fat_bin->nr_binary; nr++) {
         binary_buf_t *p_binary = (void*)fat_bin->buf + offset;
@@ -457,21 +467,7 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
         cuda_module->fatbin_size         = p_binary->size;
         cuda_module->cudaKernelsCount    = p_binary->nr_func;
         cuda_module->cudaVarsCount       = p_binary->nr_var;
-// #ifdef ENABLE_ENC
-//         cuda_module->fatbin              = malloc(p_binary->size);
-//         debug("arg payload_tag\n");
-//         for (i=0; i<SAMPLE_SP_TAG_SIZE; i++) {
-//             print("%x ", p_binary->payload_tag[i]);
-//         }
-//         print("\n\n");
-//         if(sp_ra_decrypt_req(&tctx->g_sp_db, p_binary->buf, p_binary->size, cuda_module->fatbin, p_binary->payload_tag)) {
-//             error("decrypt failed.\n");
-//             arg->cmd = cudaErrorUnknown;
-//             return;
-//         }
-// #else
         cuda_module->fatbin              = p_binary->buf;
-// #endif
         offset += p_binary->size + sizeof(binary_buf_t);
         cuError(cuModuleLoadData(&cuda_module->module, cuda_module->fatbin));
         debug("Loading module... #%d, fatbin = 0x%lx, fatbin size=0x%x\n", 
@@ -508,6 +504,7 @@ static void primarycontext(VirtQueueElement *elem, ThreadContext *tctx)
                 j, var->addr_name, var->addr_name_size, var->host_var, var->global);
         }
     }
+    free(buf);
     ctx->initialized = 1;
     ctx->tctx->deviceBitmap |= 1<< ctx->tctx->cur_dev;
     arg->cmd = cudaSuccess;
